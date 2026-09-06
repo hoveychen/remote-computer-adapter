@@ -134,36 +134,52 @@ func Run(c Config, args []string, rca string) error {
 	if e = atomicWrite(c.RuntimeHome, "config.toml", harnessConfig(c, "http://"+listener.Addr().String()+"/mcp")); e != nil {
 		return e
 	}
-	// The only model-facing cwd is the fixed executor cwd. The OS process starts
-	// in a private trusted directory so ambient project config isn't imported.
-	launchArgs := append([]string{"exec", "--strict-config", "--skip-git-repo-check", "--cd", c.RemoteCWD}, args[1:]...)
-	cmd := exec.Command(c.Binary, launchArgs...)
+	// app-server accepts environment-native cwd separately from local config cwd.
+	cmd := exec.Command(c.Binary, "app-server", "--strict-config")
 	cmd.Dir = filepath.Join(c.RuntimeHome, "work")
 	cmd.Env = harnessEnv(c, token)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, e := cmd.StdinPipe()
+	if e != nil {
+		return e
+	}
+	stdout, e := cmd.StdoutPipe()
+	if e != nil {
+		stdin.Close()
+		return e
+	}
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	if e = cmd.Start(); e != nil {
+		stdin.Close()
 		return e
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	for {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() {
+		stdin.Close()
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
 		select {
-		case e := <-done:
-			return e
-		case sig := <-signals:
-			if s, ok := sig.(syscall.Signal); ok {
-				syscall.Kill(-cmd.Process.Pid, s)
-			}
-		case e := <-serverErr:
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		case <-done:
+		case <-time.After(3 * time.Second):
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			<-done
-			return fmt.Errorf("trusted state server stopped: %w", e)
 		}
+	}()
+	sessionDone := make(chan error, 1)
+	go func() { sessionDone <- driveSession(ctx, c, args, stdin, stdout) }()
+	select {
+	case e := <-sessionDone:
+		return e
+	case sig := <-signals:
+		if s, ok := sig.(syscall.Signal); ok {
+			syscall.Kill(-cmd.Process.Pid, s)
+		}
+		return fmt.Errorf("interrupted: %s", sig)
+	case e := <-serverErr:
+		return fmt.Errorf("trusted state server stopped: %w", e)
 	}
 }
