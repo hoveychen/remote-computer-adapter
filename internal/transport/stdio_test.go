@@ -162,11 +162,20 @@ func TestStdioDialerErrorsAfterPipeClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStdioDialer: %v", err)
 	}
+	defer d.Close()
 	// Tear down the server end (as if the ssh child exited).
 	_ = ln.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// yamux observes EOF asynchronously; OpenStream may enqueue a SYN before
+	// its receive loop sees the closed pipe. Require EOF detection to complete
+	// within the deadline before checking subsequent Dial calls.
+	select {
+	case <-d.sess.CloseChan():
+	case <-ctx.Done():
+		t.Fatal("session did not detect the closed pipe")
+	}
 	if _, err := d.Dial(ctx); err == nil {
 		t.Fatal("expected Dial to error after the pipe was closed, got nil")
 	}
