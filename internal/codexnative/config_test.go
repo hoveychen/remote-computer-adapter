@@ -56,7 +56,7 @@ func TestGeneratedPolicy(t *testing.T) {
 		}
 	}
 	config := harnessConfig(c, "http://127.0.0.1:1234/mcp")
-	for _, want := range []string{"generate_memories = false", "use_memories = false", "memories = false", "inherit = \"none\"", "required = true", "bearer_token_env_var = \"RCA_STATE_TOKEN\""} {
+	for _, want := range []string{"generate_memories = false", "use_memories = true", "memories = true", "dedicated_tools = true", "inherit = \"none\"", "required = true", "bearer_token_env_var = \"RCA_STATE_TOKEN\""} {
 		if !strings.Contains(config, want) {
 			t.Fatal(config)
 		}
