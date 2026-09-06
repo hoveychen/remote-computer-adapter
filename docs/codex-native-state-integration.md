@@ -70,11 +70,19 @@ rg -n 'install_resolved_plugin|set_user_plugin_enabled|uninstall_plugin_id|clear
 
 结论：需要保留 `Host / Executor / Orchestrator` 读域，并新增可信 package 生命周期服务；不能让模型把 executor authority 的路径升格为 host，也不能把现有 `skills_put(id, content)` 当成完整的原生技能包安装。
 
-## P3：推荐的原生接入设计
+## P3：原生接入设计与最终选择
 
-### 选择：在可信 Rust 状态层提交，MCP 作为适配层
+### 最终选择：Go 服务统一存储
 
-推荐复用原生 memory SQLite 的事务边界，在同一数据库事务中保存语义对象、版本、审计和对应 job 状态。对外维持 memory/skills 语义工具；现有 Go JSONL 服务保留为已经验收的独立原型，不让 native SQLite 与 Go JSONL 同时成为同一对象的事实来源。
+Boss 在 2026-09-06 验收卡明确选择 **Go 服务统一存储**，并授权合并本轮研究文档。下文原生 SQLite 方案保留为已比较但未采用的备选；后续实现以本节为准。
+
+Go 可信服务是 native memory/skills 内容、revision、审计及相关提交结果的唯一事实来源。Rust 原生 tools、prompt summary、stage1/phase2 和 skills 生命周期通过受限语义客户端访问它。SQLite 中需要保留的历史/其他 harness 状态不受此项迁移影响；涉及 memory 成功/水位的 job 状态必须移入同一服务事务，或明确作为可重放派生状态，不能跨 SQLite+JSONL 分别提交后宣称原子。
+
+先扩展当前 Go 原型的结构化 native resources、package manifest、批量 CAS 与幂等事务；随后接原生 read/note，再接后台 jobs/consolidation 和 skills lifecycle。每个尚未适配的原生写入口在对应模式下 fail closed，不能回落旧本地存储。
+
+### 已比较但未采用：可信 Rust 状态层提交
+
+备选方案可复用原生 memory SQLite 的事务边界，在同一数据库事务中保存语义对象、版本、审计和对应 job 状态。对外维持 memory/skills 语义工具；现有 Go JSONL 服务保留为已经验收的独立原型，不让 native SQLite 与 Go JSONL 同时成为同一对象的事实来源。
 
 原因是 `mark_stage1_job_succeeded` 已经把 job、提取内容和后续排队放进同一 tx。若在方法返回后调用外部 Go MCP 追加日志，将重新引入“状态已提交、审计没提交”的窗口；改成先日志后 DB 也会出现反向窗口。仅增加写前/写后 hook 不满足已建立的原子性要求。
 
@@ -214,3 +222,5 @@ Codex 仓库要求每个改动片段尽量低于 500–800 行；新增概念优
 该仓库要求使用 `just test`，禁止直接 cargo test；新增行为用原生 mock Responses/app-server 集成测试。可依据改动 crate 分别运行 `just test -p codex-memories-extension`、`just test -p codex-memories-write` 等；这些 crate 名已读取 Cargo.toml 核对。修改 config/protocol 时需生成 schema；若触及 common/core/protocol，完整 `just test` 按其 AGENTS.md 另有用户确认要求。该确认不是本轮研究的阻塞点，本轮没有启动 Rust 构建。
 
 本轮结论：原生接入可行，但不存在“重新开启 memory，再给现有 MCP 添一个参数”这样的透明接线。最小合理源码片段是**原生即时笔记 + 原生读取/summary 的同源审计后端**，保持后台合并关闭；随后再接阶段一、语义 consolidation 与完整 skill package 生命周期。每片必须按上述实际覆盖范围报告状态，不能把第一片标成全部接入完成。
+
+最终实施原则：下述事务顺序、原生格式/authority 约束和验收矩阵仍然有效，但事务所有者改为 Go 服务；表格中在原生 SQLite 添加审计表的建议不实施，改成同服务中的原子日志提交。需要迁移原生 job lease/水位的操作，服务必须一并提供，而不是在 Rust 标记成功后补日志。
