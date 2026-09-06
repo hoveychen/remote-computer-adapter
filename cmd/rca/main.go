@@ -34,6 +34,10 @@ func dispatch(args []string) int {
 		return 2
 	}
 	switch args[0] {
+	case "codex-native":
+		return cmdCodexNative(args[1:])
+	case "_native-transport":
+		return cmdNativeTransport(args[1:])
 	case "_state-mcp":
 		return cmdStateMCP(args[1:])
 	case "serve":
@@ -63,6 +67,8 @@ Usage:
   rca serve [flags]                 remote side: executor + pairing code
   rca relay [flags]                 run a circuit-relay v2 relay for NAT traversal
   rca <command> [args...] [flags]   local side: run <command> routed to the remote
+  rca codex-native --config <file> -- exec [--json] -- <prompt>
+                                    prototype: trusted harness + native remote tools
   rca version                       print version
 
 Run-mode flags (extracted from anywhere on the command line; everything

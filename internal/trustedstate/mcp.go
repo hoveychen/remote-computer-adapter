@@ -106,10 +106,13 @@ func (s *Store) call(name string, args json.RawMessage) (any, error) {
 // Serve implements newline-delimited MCP stdio. No paths, resources, shell,
 // sampling, or model-accessible audit mutation endpoints are exposed.
 func Serve(in io.Reader, out io.Writer, s *Store) error {
+	return serve(in, out, s, false)
+}
+
+func serve(in io.Reader, out io.Writer, s *Store, initialized bool) error {
 	scan := bufio.NewScanner(in)
 	scan.Buffer(make([]byte, 4096), 8*MaxContent)
 	enc := json.NewEncoder(out)
-	initialized := false
 	for scan.Scan() {
 		var req struct {
 			JSONRPC string          `json:"jsonrpc"`
