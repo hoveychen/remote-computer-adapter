@@ -1,6 +1,6 @@
 # Go 统一原生状态协议 v2
 
-状态：P1 接口/验收约定完成，P2–P7 尚未实现。Boss 已选择 Go 服务作为原生 memory/skills 的唯一事实来源；不实施 Rust SQLite 审计表方案。源码证据见 `docs/codex-native-state-integration.md`，其中“最终选择”优先于保留的未采用备选。
+状态：P1 接口/验收约定完成，P2 事务引擎已实现，P3–P7 尚未实现。Boss 已选择 Go 服务作为原生 memory/skills 的唯一事实来源；不实施 Rust SQLite 审计表方案。源码证据见 `docs/codex-native-state-integration.md`，其中“最终选择”优先于保留的未采用备选。
 
 ## 代码归属与实施顺序
 
@@ -106,3 +106,9 @@ P6 必测：原生包首装/升级/停用/删除、SKILL.md 与 assets 一致、
 P7 必测：真实 patched Codex + 无宿主挂载执行域；通用 FS/exec 无 local，原生 memory/skills 全部声明覆盖的 mutation 在 Go 中可审计；故障时没有 local fallback。最终报告逐项区分已覆盖语义状态和内部存储维护，不宣称 OS 级全 I/O 审计。
 
 验证运行规则：RCA 按改动运行 `go test -race ./internal/trustedstate ./internal/codexnative ./cmd/rca`；Codex 按其 AGENTS.md 使用 `just test -p codex-memories-extension`、`just test -p codex-memories-write`、`just test -p codex-core-skills`、`just test -p codex-skills-extension` 等实际受影响 crate。新增 config/schema/dependencies 时执行该仓库对应生成流程。没有实现的测试不得写成 PASS。
+
+## P2 实际落地格式
+
+实现位于 `internal/trustedstate/native.go`。v2 envelope 将可信 actor、operation、request_id 和 expected revision 放入 `request`，其 `changes` 保存完整正文与包 manifest；`request_digest` 基于服务规范化后的请求计算。`result` 仅持久化 status、commit_sequence、error，返回的 resources 从同条请求确定性重建并在重放时校验，避免正文在日志中重复编码导致 16 MiB 包无法容纳。此节为上方示意 JSON 的具体字段布局。
+
+原生批次目前是内部 Go API，尚未通过 HTTP 暴露。包层完成路径/大小/hash/CAS/快照过期验证；SKILL.md frontmatter 与 authority 的业务验证、安装器及迁移仍属于 P6。旧版本读取请求明确返回 snapshot_expired；没有默默读新版本。每批最多 1024 个资源变化，包最多 512 文件。读取日志用带硬上限的增量 scanner，缺失最终换行视为截断拒绝。
