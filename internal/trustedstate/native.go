@@ -198,6 +198,10 @@ func normalizeNative(q NativeRequest) (NativeRequest, string, error) {
 }
 func (s *Store) evaluateNative(q NativeRequest) NativeResult {
 	result := NativeResult{Status: "rejected", CommitSequence: s.sequence + 1}
+	if reason := s.validateLegacyAlias(q); reason != "" {
+		result.Error = reason
+		return result
+	}
 	for _, c := range q.Changes {
 		old := s.native[nativeKey(c.Domain, c.Key)]
 		if old.Revision != c.ExpectedRevision {
@@ -212,6 +216,10 @@ func (s *Store) evaluateNative(q NativeRequest) NativeResult {
 			result.Error = "not_found"
 			return result
 		}
+	}
+	if !s.validMemoryPaths(q) {
+		result.Error = "memory_path_conflict"
+		return result
 	}
 	result.Status = "committed"
 	for _, c := range q.Changes {

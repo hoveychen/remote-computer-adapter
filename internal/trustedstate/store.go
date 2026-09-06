@@ -178,6 +178,10 @@ func (s *Store) evaluate(collection, op string, q Request) (uint64, Result) {
 		o.ID = q.ID
 	}
 	r := Result{Object: o}
+	if alias, ok := s.native["migration/legacy/"+collection+"/"+q.ID]; ok && !alias.Deleted {
+		r.Error = "migrated_read_only"
+		return o.Revision, r
+	}
 	if o.Revision != q.ExpectedRevision {
 		r.Error = "revision_conflict"
 		return o.Revision, r
