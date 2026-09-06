@@ -38,3 +38,34 @@ rg -n 'default_environment_selections' codex-rs/memories/write/src/runtime.rs
 预期分别定位硬编码后端、即时笔记写入、原生 SQLite 事务、阶段二的 MCP 清空/文件提交及执行域选择。上述命令已在该基线运行并人工核对函数体。
 
 结论：工具后端、prompt summary 读路径、后台生成与 pruning 必须同时纳入接入范围。不能因为 `MemoriesBackend` 已存在就声称全部原生 memory 只改一个接口即可接入。
+
+## P2：skills 是版本包与配置，不只是一个 SKILL.md
+
+| 入口 / 路径 | 已核查实现 | 接入含义 |
+|---|---|---|
+| `ext/skills/src/provider.rs:59` | SkillProvider 只有 list/read/search，要求 authority 保持一致 | 这是读接口；没有 install/update/delete 事务 |
+| `ext/skills/src/provider/host.rs:47` | host read 必须命中已加载的 skill；随后交给 HostSkillsSnapshot | 不应把宿主路径当成任意文件接口开放 |
+| `core-skills/src/model.rs:152` | snapshot 固定 metadata，但 read_skill_text 仍从映射 FS 或 LOCAL_FS 读正文 | 不能把该 snapshot 误认作内容版本快照；读取需要绑定 package revision/hash |
+| `core-skills/src/service.rs:81` / `:100` | 构造服务时安装 bundled skills；关闭 bundled 时调用 uninstall | 仅关 feature 也可能产生删除维护写入 |
+| `skills/src/lib.rs:32` / `:48` / `:121` | marker fingerprint 不匹配时删整个 `.system` 后重写嵌入资源 | 当前 marker 用 DefaultHasher，是缓存指纹，不能直接当作加密内容校验 |
+| `core-skills/src/system.rs:6` | bundled uninstall 直接 remove_dir_all，忽略错误 | 审计模式应记录版本停用，清理失败不能伪称物理删除完成 |
+| `skills/src/assets/samples/skill-installer/scripts/install-skill-from-github.py:172` | Python 直接 copytree 到 `CODEX_HOME/skills` | 在 remote-only 下这是执行端写入，不会自动安装到可信 host；需新的语义 package import |
+| `app-server/src/request_processors/catalog_processor.rs:667` | skills/config/write → ConfigEditsBuilder → clear skills/plugin cache | enabled 配置也是持久状态，应与 skill revision / audit 对齐 |
+| `core/src/config/edit.rs:453` | 按 name/path 修改 skills 配置 TOML | 启用状态不能遗漏；外部手改配置需显式导入或标为未审计外部修改 |
+| `core-plugins/src/store.rs:288` / `:327` | 按版本 install/uninstall plugin；插件可以带 skills | PluginStore 是另一条持久化入口，不能仅拦单独 skill 安装器 |
+| `core-plugins/src/manager.rs:1463` / `:1513` | 先 store.install，再 set_user_plugin_enabled | package 激活与配置分属不同提交；接入时必须处理失败恢复 |
+| `core-plugins/src/manager.rs:1566` | 先 store.uninstall，再 clear_user_plugin | 删除同样有跨存储状态，需要 tombstone/恢复语义 |
+| `core-plugins/src/remote_bundle.rs:484` | 暂存解包目录 rename 成正式目录 | 原生已存在 staging，可复用校验与原子目录发布，不能据此宣称和审计已原子 |
+
+复核命令：
+
+```sh
+cd /Users/hoveychen/workspace/codex
+rg -n 'install_system_skills|uninstall_system_skills' codex-rs/core-skills/src
+rg -n 'remove_dir_all|fs::write|DefaultHasher' codex-rs/skills/src/lib.rs
+rg -n 'read_skill_text|LOCAL_FS' codex-rs/core-skills/src/model.rs
+rg -n 'skills_config_write_response_inner|ConfigEditsBuilder|clear_cache' codex-rs/app-server/src/request_processors/catalog_processor.rs
+rg -n 'install_resolved_plugin|set_user_plugin_enabled|uninstall_plugin_id|clear_user_plugin' codex-rs/core-plugins/src/manager.rs
+```
+
+结论：需要保留 `Host / Executor / Orchestrator` 读域，并新增可信 package 生命周期服务；不能让模型把 executor authority 的路径升格为 host，也不能把现有 `skills_put(id, content)` 当成完整的原生技能包安装。
