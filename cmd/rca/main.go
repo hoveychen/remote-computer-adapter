@@ -34,6 +34,8 @@ func dispatch(args []string) int {
 		return 2
 	}
 	switch args[0] {
+	case "_state-mcp":
+		return cmdStateMCP(args[1:])
 	case "serve":
 		return cmdServe(args[1:])
 	case "relay":
