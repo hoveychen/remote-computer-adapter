@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -112,7 +114,7 @@ func TestSkillPackageValidationAndLegacyMigration(t *testing.T) {
 }
 
 func TestBundledSkillsEnsureIsAtomicAndReplayable(t *testing.T) {
-	s := openSkillsTest(t)
+	s, root := openTest(t)
 	packages := []BundledSkillPackage{
 		{PackageID: "alpha", Files: skillFiles("---\nname: alpha\ndescription: Alpha.\n---\nA\n")},
 		{PackageID: "beta", Files: skillFiles("---\nname: beta\ndescription: Beta.\n---\nB\n")},
@@ -121,6 +123,23 @@ func TestBundledSkillsEnsureIsAtomicAndReplayable(t *testing.T) {
 	replay, replayErr := s.SkillBundledEnsure("bundled-v1", "host", true, packages)
 	if err != nil || replayErr != nil || first.Error != "" || first.CommitSequence != replay.CommitSequence || len(first.Resources) != 3 {
 		t.Fatal(first, replay, err, replayErr)
+	}
+	s.Close()
+	s, err = Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	replay, replayErr = s.SkillBundledEnsure("bundled-v1", "host", true, packages)
+	if replayErr != nil || replay.CommitSequence != first.CommitSequence || len(replay.Resources) != 3 {
+		t.Fatal("stable bundled request did not replay after restart", replay, replayErr)
+	}
+	journal, err := os.ReadFile(filepath.Join(root, "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := bytes.Count(bytes.TrimSpace(journal), []byte("\n")) + 1; count != 1 {
+		t.Fatalf("bundled retry appended audit records: got %d", count)
 	}
 	disabled, err := s.SkillPackageSetEnabled("disable-alpha", "host", "alpha", 1, false)
 	if err != nil || disabled.Error != "" {
