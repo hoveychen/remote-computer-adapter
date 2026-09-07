@@ -1,6 +1,6 @@
 # Go 统一原生状态协议 v2
 
-状态：P1 接口/验收约定完成，P2 事务引擎和 P3 Go 语义 API 已实现，P4–P7 尚未实现。Boss 已选择 Go 服务作为原生 memory/skills 的唯一事实来源；不实施 Rust SQLite 审计表方案。源码证据见 `docs/codex-native-state-integration.md`，其中“最终选择”优先于保留的未采用备选。
+状态：P1–P7 已实现并完成分层测试与真实 patched Codex 隔离验收，等待 Boss 的跨仓库合并许可。Boss 已选择 Go 服务作为原生 memory/skills 的唯一事实来源；不实施 Rust SQLite 审计表方案。源码证据见 `docs/codex-native-state-integration.md`，最终验收见 `docs/codex-go-native-state-validation.md`，其中“最终选择”优先于保留的未采用备选。
 
 ## 代码归属与实施顺序
 

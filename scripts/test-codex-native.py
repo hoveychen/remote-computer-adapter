@@ -158,6 +158,8 @@ def main():
             'text(await tools.memories__read(' + json.dumps({'path': native_path}) + '));',
             'text(await tools.memories__search({queries:["NATIVE_CANONICAL_NOTE"]}));',
             'text(await tools.memories__list({path:"extensions/ad_hoc/notes"}));',
+            'text(await tools.skills__list({authority:{kind:"host"}}));',
+            'text(await tools.skills__read({authority:{kind:"host"},package:"imagegen",resource:"native-skill:host:imagegen:1:SKILL.md"}));',
         ])
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -223,11 +225,21 @@ def main():
         entries = [r for r in all_entries if r.get('format_version', 1) != 2]
         native_entries = [r for r in all_entries if r.get('format_version') == 2]
         notes = [r for r in native_entries if r['request']['operation'] == 'memory.note.create']
+        bundled = [r for r in native_entries if r['request']['operation'] == 'skills.bundled.ensure']
         check('native_note_has_single_go_receipt', len(notes) == 1
               and base64.b64decode(notes[0]['request']['changes'][0]['content_base64']) == b'NATIVE_CANONICAL_NOTE')
         check('native_read_search_list_use_go_state', 'NATIVE_CANONICAL_NOTE' in output(13)
               and 'NATIVE_CANONICAL_NOTE' in output(14) and native_filename in output(15))
+        check('native_skills_list_and_read_use_go_state', 'native-skill:host:imagegen:1:SKILL.md' in output(16)
+              and 'Image Generation Skill' in output(17))
+        check('native_bundled_skills_have_single_go_receipt', len(bundled) == 1
+              and bundled[0]['result']['status'] == 'committed'
+              and any(change.get('domain') == 'skills.package'
+                      and change.get('key') == 'imagegen'
+                      and change.get('package', {}).get('files')
+                      for change in bundled[0]['request']['changes']))
         check('native_memory_has_no_local_note', not (p / 'harness/memories').exists())
+        check('native_skills_have_no_local_cache', not (p / 'harness/skills').exists())
         check('semantic_state_audit', len(entries) == 3 and entries[0]['collection'] == 'memory'
               and entries[0]['result']['object']['content'] == 'TRUSTED_MEMORY'
               and entries[1]['collection'] == 'skills' and entries[1]['result']['object']['content'] == 'TRUSTED_SKILL')
