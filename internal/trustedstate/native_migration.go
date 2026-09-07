@@ -40,7 +40,12 @@ func (s *Store) validateLegacyAlias(q NativeRequest) string {
 			return "invalid_migration"
 		}
 		var a LegacyAlias
-		if strictJSON(c.Content, &a) != nil || a.Collection != "memory" || !logicalID.MatchString(a.ID) || a.Domain != "memory.note" || !noteFilename.MatchString(a.Key) || c.Key != "legacy/memory/"+a.ID {
+		if strictJSON(c.Content, &a) != nil {
+			return "invalid_migration"
+		}
+		validMemory := a.Collection == "memory" && a.Domain == "memory.note" && noteFilename.MatchString(a.Key)
+		validSkill := a.Collection == "skills" && a.Domain == "skills.package" && a.Key == a.ID
+		if !logicalID.MatchString(a.ID) || (!validMemory && !validSkill) || c.Key != "legacy/"+a.Collection+"/"+a.ID {
 			return "invalid_migration"
 		}
 		old := s.objects[a.Collection+"/"+a.ID]
@@ -49,8 +54,13 @@ func (s *Store) validateLegacyAlias(q NativeRequest) string {
 		}
 		found := false
 		for _, target := range q.Changes {
-			if target.Domain == a.Domain && target.Key == a.Key && !target.Deleted && string(target.Content) == old.Content {
-				found = true
+			if target.Domain == a.Domain && target.Key == a.Key && !target.Deleted {
+				if a.Collection == "memory" && string(target.Content) == old.Content {
+					found = true
+				}
+				if a.Collection == "skills" && target.Package != nil && len(target.Package.Files) == 1 && target.Package.Files[0].Path == "SKILL.md" && string(target.Package.Files[0].Content) == old.Content {
+					found = true
+				}
 			}
 		}
 		if !found {

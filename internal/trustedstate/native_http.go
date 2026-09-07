@@ -79,7 +79,11 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 			http.Error(w, "POST required", 405)
 			return
 		}
-		body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 2*NativeResourceBytes))
+		requestLimit := int64(2 * NativeResourceBytes)
+		if subject.Kind == "installer" {
+			requestLimit = NativeTransactionBytes
+		}
+		body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, requestLimit))
 		if e != nil {
 			http.Error(w, "request too large", 413)
 			return
@@ -94,6 +98,13 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 		var result any
 		requireBackground := func() bool {
 			if subject.Kind != "background" {
+				http.Error(w, "role not authorized", 403)
+				return false
+			}
+			return true
+		}
+		requireInstaller := func() bool {
+			if subject.Kind != "installer" {
 				http.Error(w, "role not authorized", 403)
 				return false
 			}
@@ -121,6 +132,8 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 					caps = append(caps, "native_memory_note")
 				} else if subject.Kind == "background" {
 					caps = append(caps, "native_memory_jobs", "native_memory_consolidation")
+				} else if subject.Kind == "installer" {
+					caps = append(caps, "native_skills_packages")
 				}
 				result = map[string]any{"protocol": 2, "store_id": identity, "capabilities": caps, "limits": map[string]int{"resource_bytes": NativeResourceBytes, "page_bytes": NativePageBytes}}
 			}
@@ -333,6 +346,77 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 				return
 			}
 			setReceipt(s.MemoryClear(q.RequestID))
+		case "/native/v2/skills.package.replace":
+			if !requireInstaller() {
+				return
+			}
+			var q struct {
+				RequestID        string `json:"request_id"`
+				PackageID        string `json:"package_id"`
+				ExpectedRevision uint64 `json:"expected_revision"`
+				Enabled          bool   `json:"enabled"`
+				Files            []struct {
+					Path    string `json:"path"`
+					Content []byte `json:"content_base64"`
+				} `json:"files"`
+			}
+			if !decode(&q) {
+				return
+			}
+			files := make([]NativeFile, 0, len(q.Files))
+			for _, file := range q.Files {
+				files = append(files, NativeFile{Path: file.Path, Content: file.Content})
+			}
+			setReceipt(s.SkillPackageReplace(q.RequestID, subject.ThreadID, q.PackageID, q.ExpectedRevision, q.Enabled, files))
+		case "/native/v2/skills.package.enable":
+			if !requireInstaller() {
+				return
+			}
+			var q struct {
+				RequestID        string `json:"request_id"`
+				PackageID        string `json:"package_id"`
+				ExpectedRevision uint64 `json:"expected_revision"`
+				Enabled          bool   `json:"enabled"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.SkillPackageSetEnabled(q.RequestID, subject.ThreadID, q.PackageID, q.ExpectedRevision, q.Enabled))
+		case "/native/v2/skills.package.delete":
+			if !requireInstaller() {
+				return
+			}
+			var q struct {
+				RequestID        string `json:"request_id"`
+				PackageID        string `json:"package_id"`
+				ExpectedRevision uint64 `json:"expected_revision"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.SkillPackageDelete(q.RequestID, subject.ThreadID, q.PackageID, q.ExpectedRevision))
+		case "/native/v2/skills.package.list":
+			if !requireInstaller() {
+				return
+			}
+			var q struct{}
+			if !decode(&q) {
+				return
+			}
+			result, e = s.SkillPackageList(subject.ThreadID)
+		case "/native/v2/skills.package.read":
+			if !requireInstaller() {
+				return
+			}
+			var q struct {
+				PackageID string `json:"package_id"`
+				Revision  uint64 `json:"revision"`
+				Path      string `json:"path"`
+			}
+			if !decode(&q) {
+				return
+			}
+			result, e = s.SkillPackageRead(subject.ThreadID, q.PackageID, q.Revision, q.Path)
 		default:
 			http.NotFound(w, r)
 			return
@@ -343,6 +427,8 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 				status = 503
 			} else if e.Error() == "snapshot_expired" || e.Error() == "revision_conflict" || e.Error() == "lease_lost" || e.Error() == "lease_unavailable" || e.Error() == "stale_consolidation" || e.Error() == "job_conflict" {
 				status = 409
+			} else if e.Error() == "authority_mismatch" {
+				status = 403
 			} else if e.Error() == "not_found" {
 				status = 404
 			}

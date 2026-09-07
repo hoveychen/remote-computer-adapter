@@ -202,6 +202,9 @@ func normalizeNative(q NativeRequest) (NativeRequest, string, error) {
 			if !files["SKILL.md"] || size > NativePackageBytes {
 				return q, "", errors.New("invalid package size or missing SKILL.md")
 			}
+			if err := validateSkillPackage(c.Key, p); err != nil {
+				return q, "", err
+			}
 			total += size
 		} else if c.Package != nil {
 			return q, "", errors.New("manifest outside package domain")
