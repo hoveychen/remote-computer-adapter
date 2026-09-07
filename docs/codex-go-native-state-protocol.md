@@ -62,8 +62,9 @@ v2 的一条成功记录包含本次事务的全部资源变更、package manife
 | memory.summary.read | 从同一 canonical memory.artifact revision 读取 summary；没有本地磁盘 fallback |
 | resources.batch | 内部事务原语：expected version 向量 + 全量变化集；MCP 不直接暴露 |
 | skills.package.replace | package_id、expected revision、全部文件；服务验证 SKILL.md frontmatter 和依赖资源，原子激活 |
-| skills.package.disable/delete | 停用/删除与配置视图、tombstone、审计同一提交 |
+| skills.package.enable/delete | 启停/删除与配置视图、tombstone、审计同一提交 |
 | skills.package.list/read | authority、package_id、revision、域内 resource key；禁止 executor→host 升格 |
+| skills.bundled.ensure | 内置包首装、升级、移除与 maintenance manifest 在一个事务提交；稳定版本 request_id 跨重启重放 |
 | maintenance.materialize | 可信侧按 commit revision 生成原生文件视图，报告每次成功/失败；无任意宿主路径参数 |
 | migration.import_v1 | source fingerprint、固定原 revision、目标映射；一次原子导入，保留原日志 |
 
@@ -111,14 +112,14 @@ P7 必测：真实 patched Codex + 无宿主挂载执行域；通用 FS/exec 无
 
 实现位于 `internal/trustedstate/native.go`。v2 envelope 将可信 actor、operation、request_id 和 expected revision 放入 `request`，其 `changes` 保存完整正文与包 manifest；`request_digest` 基于服务规范化后的请求计算。`result` 仅持久化 status、commit_sequence、error，返回的 resources 从同条请求确定性重建并在重放时校验，避免正文在日志中重复编码导致 16 MiB 包无法容纳。此节为上方示意 JSON 的具体字段布局。
 
-原生批次目前是内部 Go API，尚未通过 HTTP 暴露。包层完成路径/大小/hash/CAS/快照过期验证；SKILL.md frontmatter 与 authority 的业务验证、安装器及迁移仍属于 P6。旧版本读取请求明确返回 snapshot_expired；没有默默读新版本。每批最多 1024 个资源变化，包最多 512 文件。读取日志用带硬上限的增量 scanner，缺失最终换行视为截断拒绝。
+原生批次仍是内部 Go API，不向 HTTP 暴露任意 actor/domain。受限的 skills package replace/enable/delete/list/read 与 bundled ensure 已通过 installer-only HTTP 端点开放；服务完成路径/大小/hash/CAS、SKILL.md frontmatter、authority 与快照过期验证。旧版本读取请求明确返回 snapshot_expired；没有默默读新版本。每批最多 1024 个资源变化，包最多 512 文件。读取日志用带硬上限的增量 scanner，缺失最终换行视为截断拒绝。
 
 ## P3 原生 memory HTTP 契约
 
-`NativeHTTPHandler` 由可信 owner 配置独立 token、role 和 thread_id；生产启动器尚未接线（P4）。与 v1 的 `HTTPHandler` 分开构造，再由可信 loopback server 分流路径。所有端点用 POST 与 Bearer 凭证，拒绝 Origin、未知字段、任意 domain/actor/root 和批量事务端点。当前角色 model_tool 可 read/note；background/installer 只有 read，握手不宣称 jobs/skills 能力。
+`NativeHTTPHandler` 由可信 owner 配置独立 token、role 和 thread_id；生产启动器为 model、background、installer 分配不同凭证。与 v1 的 `HTTPHandler` 分开构造，再由可信 loopback server 分流路径。所有端点用 POST 与 Bearer 凭证，拒绝 Origin、未知字段、任意 domain/actor/root 和批量事务端点。model_tool 可 read/note，background 可执行受限 memory jobs/consolidation，installer 可执行受限 skills 生命周期；握手按角色声明能力。installer authority 由凭证绑定，不能由请求提供或改写。
 
 `/native/v2/handshake` 以空对象请求返回 protocol、持久化 store_id、按角色能力及 limits。首次启用 native HTTP 时，store identity 作为 maintenance/store-id 提交到同一个日志。其余端点为 `/native/v2/memory.note.create`、`memory.list`、`memory.read`、`memory.search`、`memory.summary.read`，字段命名与 Codex backend 对应。note 请求额外带可信 call_id，request_id 由服务对 thread_id/call_id 确定性生成，响应是原生空对象，提交序号在 `X-RCA-Commit-Sequence`。
 
 list/read/search 的响应 JSON 保留原生字段；`X-RCA-Snapshot` 返回该响应所用提交序号，read 的可选 expected_sequence 可绑定此前列表快照，否则读取当前快照。游标绑定提交序号和全部查询参数，任何提交均保守地使旧游标失效。list 最多 2000 项、search 最多 200 项，另受 32 KiB 正文预算限制。Go read 接受 line_offset/max_lines，不接受 max_tokens；Rust P4 必须继续调用原生 token 截断逻辑。单个搜索匹配正文超 32 KiB 时明确报错，要求减小 context 或用 read，不伪造完整匹配。
 
-`ImportLegacyMemory` 是可信内部 API：仅导入 memory，检查固定源版本/hash，在一个批次创建 native note 和 migration/legacy/memory/<id> alias。v1 对已迁移对象的后续写入持久化 migrated_read_only 拒绝结果，导入失败不冻结源对象。skills 导入仍待 P6 的 frontmatter/authority 验证。
+`ImportLegacyMemory` 与 `ImportLegacySkill` 是可信内部 API：检查固定源版本/hash，在一个批次创建 native 对象和 migration alias。skill 导入额外验证 frontmatter、name 与包内资源引用。v1 对已迁移对象的后续写入持久化 migrated_read_only 拒绝结果，导入失败不冻结源对象。

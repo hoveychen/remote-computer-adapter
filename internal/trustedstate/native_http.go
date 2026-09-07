@@ -368,6 +368,33 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 				files = append(files, NativeFile{Path: file.Path, Content: file.Content})
 			}
 			setReceipt(s.SkillPackageReplace(q.RequestID, subject.ThreadID, q.PackageID, q.ExpectedRevision, q.Enabled, files))
+		case "/native/v2/skills.bundled.ensure":
+			if !requireInstaller() {
+				return
+			}
+			var q struct {
+				RequestID string `json:"request_id"`
+				Enabled   bool   `json:"enabled"`
+				Packages  []struct {
+					PackageID string `json:"package_id"`
+					Files     []struct {
+						Path    string `json:"path"`
+						Content []byte `json:"content_base64"`
+					} `json:"files"`
+				} `json:"packages"`
+			}
+			if !decode(&q) {
+				return
+			}
+			packages := make([]BundledSkillPackage, 0, len(q.Packages))
+			for _, bundled := range q.Packages {
+				files := make([]NativeFile, 0, len(bundled.Files))
+				for _, file := range bundled.Files {
+					files = append(files, NativeFile{Path: file.Path, Content: file.Content})
+				}
+				packages = append(packages, BundledSkillPackage{PackageID: bundled.PackageID, Files: files})
+			}
+			setReceipt(s.SkillBundledEnsure(q.RequestID, subject.ThreadID, q.Enabled, packages))
 		case "/native/v2/skills.package.enable":
 			if !requireInstaller() {
 				return

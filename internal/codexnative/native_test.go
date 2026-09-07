@@ -21,7 +21,8 @@ func TestNativeServiceBindsActualThreadAndReplaysReceipt(t *testing.T) {
 	}
 	defer state.Close()
 	token := strings.Repeat("n", 64)
-	handler, bind, storeID, err := nativeService(state, token, strings.Repeat("b", 64))
+	installerToken := strings.Repeat("i", 64)
+	handler, bind, storeID, err := nativeService(state, token, strings.Repeat("b", 64), installerToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +37,10 @@ func TestNativeServiceBindsActualThreadAndReplaysReceipt(t *testing.T) {
 	handshake := request("handshake", token, map[string]any{})
 	if handshake.Code != 200 || !strings.Contains(handshake.Body.String(), storeID) {
 		t.Fatal(handshake)
+	}
+	installerHandshake := request("handshake", installerToken, map[string]any{})
+	if installerHandshake.Code != 200 || !strings.Contains(installerHandshake.Body.String(), "native_skills_packages") {
+		t.Fatal(installerHandshake)
 	}
 	note := map[string]any{"call_id": "call-1", "filename": "2026-09-06T01-02-03-native.md", "note": "canonical note"}
 	if got := request("memory.note.create", token, note); got.Code != 503 {

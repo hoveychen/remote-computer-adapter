@@ -1,6 +1,7 @@
 package trustedstate
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"path"
@@ -37,6 +38,25 @@ type SkillPackageRead struct {
 	Path      string `json:"path"`
 	Content   []byte `json:"content_base64"`
 	SHA256    string `json:"sha256"`
+}
+
+type BundledSkillPackage struct {
+	PackageID string       `json:"package_id"`
+	Files     []NativeFile `json:"files"`
+}
+
+type bundledSkillManifest struct {
+	Packages []string `json:"packages"`
+	Managed  []string `json:"managed"`
+}
+
+const bundledSkillManifestKey = "skills/bundled.json"
+
+func cloneSkillResource(resource NativeResource) NativeResource {
+	data, _ := json.Marshal(resource)
+	var cloned NativeResource
+	_ = json.Unmarshal(data, &cloned)
+	return cloned
 }
 
 func validateSkillPackage(packageID string, p *NativePackage) error {
@@ -77,7 +97,7 @@ func validateSkillPackage(packageID string, p *NativePackage) error {
 	if name != packageID || description == "" || len(description) > 4096 {
 		return errors.New("invalid SKILL.md name or description")
 	}
-	for _, match := range markdownLink.FindAllStringSubmatch(text, -1) {
+	for _, match := range markdownLink.FindAllStringSubmatch(markdownWithoutFencedCode(text), -1) {
 		target := strings.TrimSpace(strings.SplitN(match[1], "#", 2)[0])
 		if target == "" || strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
 			continue
@@ -91,6 +111,26 @@ func validateSkillPackage(packageID string, p *NativePackage) error {
 		}
 	}
 	return nil
+}
+
+func markdownWithoutFencedCode(text string) string {
+	var visible strings.Builder
+	fence := ""
+	for _, line := range strings.SplitAfter(text, "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if fence == "" && (strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")) {
+			fence = trimmed[:3]
+			continue
+		}
+		if fence != "" {
+			if strings.HasPrefix(trimmed, fence) {
+				fence = ""
+			}
+			continue
+		}
+		visible.WriteString(line)
+	}
+	return visible.String()
 }
 
 func (s *Store) SkillPackageReplace(requestID, authority, packageID string, expectedRevision uint64, enabled bool, files []NativeFile) (NativeResult, error) {
@@ -109,6 +149,110 @@ func (s *Store) SkillPackageReplace(requestID, authority, packageID string, expe
 	}
 	change := NativeChange{Domain: "skills.package", Key: packageID, ExpectedRevision: expectedRevision, Package: &NativePackage{Authority: authority, Enabled: enabled, Files: files}}
 	return s.NativeBatch(NativeRequest{RequestID: requestID, Actor: NativeActor{Kind: "installer", ThreadID: authority}, Operation: "skills.package.replace", Intent: intent, Changes: []NativeChange{change}})
+}
+
+func (s *Store) SkillBundledEnsure(requestID, authority string, enabled bool, packages []BundledSkillPackage) (NativeResult, error) {
+	intent := nativeIntent([]any{authority, enabled, packages})
+	if result, found, err := s.skillRequestReplay(requestID, "skills.bundled.ensure", intent); found || err != nil {
+		return result, err
+	}
+	sorted := append([]BundledSkillPackage(nil), packages...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PackageID < sorted[j].PackageID })
+	desired := make(map[string]BundledSkillPackage, len(sorted))
+	for _, bundled := range sorted {
+		if _, duplicate := desired[bundled.PackageID]; duplicate {
+			return NativeResult{}, errors.New("duplicate bundled skill package")
+		}
+		packageValue := &NativePackage{Authority: authority, Enabled: enabled, Files: bundled.Files}
+		if err := validateSkillPackage(bundled.PackageID, packageValue); err != nil {
+			return NativeResult{}, err
+		}
+		desired[bundled.PackageID] = bundled
+	}
+
+	s.mu.Lock()
+	marker := cloneSkillResource(s.native[nativeKey("maintenance", bundledSkillManifestKey)])
+	current := make(map[string]NativeResource, len(desired))
+	for packageID := range desired {
+		current[packageID] = cloneSkillResource(s.native[nativeKey("skills.package", packageID)])
+	}
+	var previous bundledSkillManifest
+	if marker.Revision != 0 && !marker.Deleted {
+		if err := strictJSON(marker.Content, &previous); err != nil {
+			s.mu.Unlock()
+			return NativeResult{}, errors.New("invalid bundled skill manifest")
+		}
+		for _, packageID := range previous.Packages {
+			if _, ok := current[packageID]; !ok {
+				current[packageID] = cloneSkillResource(s.native[nativeKey("skills.package", packageID)])
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	managedIDs := append(append([]string(nil), previous.Managed...), previous.Packages...)
+	managed := make(map[string]bool, len(managedIDs))
+	for _, packageID := range managedIDs {
+		if !logicalID.MatchString(packageID) {
+			return NativeResult{}, errors.New("invalid bundled skill manifest")
+		}
+		managed[packageID] = true
+	}
+	changes := make([]NativeChange, 0, len(sorted)+len(previous.Packages)+1)
+	packageIDs := make([]string, 0, len(sorted))
+	for _, bundled := range sorted {
+		packageIDs = append(packageIDs, bundled.PackageID)
+		old := current[bundled.PackageID]
+		if old.Revision != 0 && !managed[bundled.PackageID] {
+			return NativeResult{}, errors.New("bundled skill package collision")
+		}
+		active := enabled
+		if old.Revision != 0 && !old.Deleted {
+			if old.Package == nil || old.Package.Authority != authority {
+				return NativeResult{}, errors.New("authority_mismatch")
+			}
+			active = old.Package.Enabled
+			if nativeFilesEqual(old.Package.Files, bundled.Files) {
+				continue
+			}
+		}
+		managed[bundled.PackageID] = true
+		changes = append(changes, NativeChange{Domain: "skills.package", Key: bundled.PackageID, ExpectedRevision: old.Revision, Package: &NativePackage{Authority: authority, Enabled: active, Files: bundled.Files}})
+	}
+	for _, packageID := range previous.Packages {
+		if _, retained := desired[packageID]; retained {
+			continue
+		}
+		old := current[packageID]
+		if old.Revision == 0 || old.Deleted || old.Package == nil || old.Package.Authority != authority {
+			return NativeResult{}, errors.New("authority_mismatch")
+		}
+		changes = append(changes, NativeChange{Domain: "skills.package", Key: packageID, ExpectedRevision: old.Revision, Deleted: true})
+	}
+	allManaged := make([]string, 0, len(managed))
+	for packageID := range managed {
+		allManaged = append(allManaged, packageID)
+	}
+	sort.Strings(allManaged)
+	manifestContent, _ := json.Marshal(bundledSkillManifest{Packages: packageIDs, Managed: allManaged})
+	changes = append(changes, NativeChange{Domain: "maintenance", Key: bundledSkillManifestKey, ExpectedRevision: marker.Revision, Content: manifestContent})
+	return s.NativeBatch(NativeRequest{RequestID: requestID, Actor: NativeActor{Kind: "maintenance", ThreadID: authority}, Operation: "skills.bundled.ensure", Intent: intent, Changes: changes})
+}
+
+func nativeFilesEqual(a, b []NativeFile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left := append([]NativeFile(nil), a...)
+	right := append([]NativeFile(nil), b...)
+	sort.Slice(left, func(i, j int) bool { return left[i].Path < left[j].Path })
+	sort.Slice(right, func(i, j int) bool { return right[i].Path < right[j].Path })
+	for i := range left {
+		if left[i].Path != right[i].Path || !bytes.Equal(left[i].Content, right[i].Content) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) SkillPackageSetEnabled(requestID, authority, packageID string, expectedRevision uint64, enabled bool) (NativeResult, error) {

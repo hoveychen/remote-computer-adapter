@@ -81,6 +81,11 @@ func TestSkillPackageValidationAndLegacyMigration(t *testing.T) {
 		{"missing-frontmatter", skillFiles("plain markdown")},
 		{"wrong-name", skillFiles(validSkillBody("different"), NativeFile{Path: "references/details.md", Content: []byte("x")})},
 		{"missing-asset", skillFiles(validSkillBody("missing-asset"))},
+		{"missing-outside-fence", skillFiles("---\nname: missing-outside-fence\ndescription: Missing dependency.\n---\n[missing](missing.md)\n")},
+	}
+	fenced := skillFiles("---\nname: fenced-example\ndescription: Example links are not dependencies.\n---\n```markdown\n[example](not-packaged.md)\n```\n")
+	if result, err := s.SkillPackageReplace("fenced-example", "host", "fenced-example", 0, true, fenced); err != nil || result.Error != "" {
+		t.Fatal("fenced example link was treated as a package dependency", result, err)
 	}
 	for i, tc := range bad {
 		if _, err := s.SkillPackageReplace("bad-skill-"+jsonNumber(uint64(i)), "host", tc.id, 0, true, tc.files); err == nil {
@@ -103,6 +108,52 @@ func TestSkillPackageValidationAndLegacyMigration(t *testing.T) {
 	}
 	if result := mutation(t, s, "skills", "put", Request{ID: "legacy", Content: body, ExpectedRevision: legacy.Object.Revision, RequestID: "legacy-after"}); result.Error != "migrated_read_only" {
 		t.Fatal("migrated source remained writable", result)
+	}
+}
+
+func TestBundledSkillsEnsureIsAtomicAndReplayable(t *testing.T) {
+	s := openSkillsTest(t)
+	packages := []BundledSkillPackage{
+		{PackageID: "alpha", Files: skillFiles("---\nname: alpha\ndescription: Alpha.\n---\nA\n")},
+		{PackageID: "beta", Files: skillFiles("---\nname: beta\ndescription: Beta.\n---\nB\n")},
+	}
+	first, err := s.SkillBundledEnsure("bundled-v1", "host", true, packages)
+	replay, replayErr := s.SkillBundledEnsure("bundled-v1", "host", true, packages)
+	if err != nil || replayErr != nil || first.Error != "" || first.CommitSequence != replay.CommitSequence || len(first.Resources) != 3 {
+		t.Fatal(first, replay, err, replayErr)
+	}
+	disabled, err := s.SkillPackageSetEnabled("disable-alpha", "host", "alpha", 1, false)
+	if err != nil || disabled.Error != "" {
+		t.Fatal(disabled, err)
+	}
+	packages[0].Files[0].Content = []byte("---\nname: alpha\ndescription: Alpha v2.\n---\nA2\n")
+	packages = packages[:1]
+	upgraded, err := s.SkillBundledEnsure("bundled-v2", "host", true, packages)
+	if err != nil || upgraded.Error != "" || len(upgraded.Resources) != 3 {
+		t.Fatal(upgraded, err)
+	}
+	listed, err := s.SkillPackageList("host")
+	if err != nil || len(listed.Packages) != 1 || listed.Packages[0].PackageID != "alpha" || listed.Packages[0].Enabled || listed.Packages[0].Revision != 3 {
+		t.Fatal(listed, err)
+	}
+	if _, err = s.SkillPackageRead("host", "beta", 1, "SKILL.md"); err == nil || err.Error() != "snapshot_expired" {
+		t.Fatal("removed bundled skill remained readable", err)
+	}
+	reintroduced := []BundledSkillPackage{{PackageID: "beta", Files: skillFiles("---\nname: beta\ndescription: Beta returns.\n---\nB2\n")}}
+	result, err := s.SkillBundledEnsure("bundled-v3", "host", true, reintroduced)
+	if err != nil || result.Error != "" {
+		t.Fatal("managed tombstone could not be reintroduced", result, err)
+	}
+}
+
+func TestBundledSkillsEnsureRejectsUnmanagedCollision(t *testing.T) {
+	s := openSkillsTest(t)
+	files := skillFiles("---\nname: demo\ndescription: User package.\n---\nBody\n")
+	if result, err := s.SkillPackageReplace("user-install", "host", "demo", 0, true, files); err != nil || result.Error != "" {
+		t.Fatal(result, err)
+	}
+	if _, err := s.SkillBundledEnsure("bundled-collision", "host", true, []BundledSkillPackage{{PackageID: "demo", Files: files}}); err == nil || err.Error() != "bundled skill package collision" {
+		t.Fatal("unmanaged package was overwritten", err)
 	}
 }
 
