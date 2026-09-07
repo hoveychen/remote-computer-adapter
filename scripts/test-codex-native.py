@@ -201,9 +201,18 @@ def main():
         (p / 'stderr.txt').write_text(err)
         (p / 'requests.json').write_text(json.dumps(requests, indent=2))
         check('codex_completed', proc.returncode == 0 and 'E2E_DONE' in out and len(requests) == len(code) + 1)
-        advertised_custom_tools = [tool['name'] for item in requests[0].get('input', [])
+        def custom_tool_names(tools):
+            names = []
+            for tool in tools:
+                if tool.get('type') == 'custom':
+                    names.append(tool['name'])
+                elif tool.get('type') == 'namespace':
+                    names.extend(custom_tool_names(tool.get('tools', [])))
+            return names
+
+        advertised_custom_tools = [name for item in requests[0].get('input', [])
                                    if item.get('type') == 'additional_tools'
-                                   for tool in item.get('tools', []) if tool.get('type') == 'custom']
+                                   for name in custom_tool_names(item.get('tools', []))]
         check('custom_tool_name_matches_advertisement', advertised_custom_tools == ['exec'])
         # Assert actual tool outputs, not the scripted assistant's final claim.
         outputs = {}
