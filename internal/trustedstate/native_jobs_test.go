@@ -193,6 +193,25 @@ func TestNativeMemoryMaintenanceAndProjectionReplay(t *testing.T) {
 			t.Fatalf("clear left live memory resource: %+v", resource)
 		}
 	}
+	if len(projection.Jobs) != 0 {
+		t.Fatalf("clear left memory jobs or leases live: %+v", projection.Jobs)
+	}
+	lost := batch(t, s, jobRequest("commit-after-clear", "memory.stage1.commit", NativeJobCommand{JobID: "pending", LeaseToken: claim.LeaseToken},
+		NativeChange{Domain: "memory.stage1", Key: "raw/pending.md", Content: []byte("stale")},
+		NativeChange{Domain: "memory.stage1", Key: "summary/pending.md", Content: []byte("stale")}))
+	if lost.Status != "rejected" || len(lost.Resources) != 0 {
+		t.Fatalf("clear did not invalidate old lease: %+v", lost)
+	}
+	s.Close()
+	s, err = Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	projection, err = s.MemoryProjection()
+	if err != nil || len(projection.Jobs) != 0 {
+		t.Fatalf("cleared jobs reappeared after replay: %+v %v", projection.Jobs, err)
+	}
 }
 
 func TestNativeStage1InputVersionRefreshesCanonicalOutput(t *testing.T) {

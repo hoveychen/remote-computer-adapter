@@ -486,7 +486,10 @@ func (s *Store) applyNative(r nativeRecord) {
 		for _, j := range r.Result.Jobs {
 			s.nativeJobs[j.JobID] = cloneNativeJob(j)
 		}
-		if hasMemoryChange {
+		if r.Request.Operation == "memory.clear" {
+			clear(s.nativeJobs)
+		}
+		if hasMemoryChange || r.Request.Operation == "memory.clear" {
 			s.memoryGeneration++
 		}
 		if r.Request.Job != nil && r.Result.MemoryGeneration != s.memoryGeneration {
