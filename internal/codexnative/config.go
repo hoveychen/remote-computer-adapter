@@ -100,7 +100,7 @@ check_for_update_on_startup = false
 cli_auth_credentials_store = "file"
 
 [features]
-memories = false
+memories = true
 hooks = false
 apps = false
 remote_plugin = false
@@ -110,7 +110,8 @@ skill_mcp_dependency_install = false
 
 [memories]
 generate_memories = false
-use_memories = false
+use_memories = true
+dedicated_tools = true
 
 [shell_environment_policy]
 inherit = "none"

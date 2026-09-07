@@ -24,6 +24,10 @@ type rpcMessage struct {
 // driveSession is a narrow app-server client, not a general RPC pass-through.
 // Local bootstrap cwd and remote tool cwd are separate native API fields.
 func driveSession(ctx context.Context, c Config, args []string, in io.Writer, out io.Reader) error {
+	return driveNativeSession(ctx, c, args, in, out, nil)
+}
+
+func driveNativeSession(ctx context.Context, c Config, args []string, in io.Writer, out io.Reader, bindThread func(string) error) error {
 	prompt := ""
 	jsonOutput := false
 	for i, a := range args {
@@ -196,6 +200,11 @@ func driveSession(ctx context.Context, c Config, args []string, in io.Writer, ou
 	}
 	if thread.Thread.ID == "" {
 		return errors.New("missing thread id")
+	}
+	if bindThread != nil {
+		if e = bindThread(thread.Thread.ID); e != nil {
+			return e
+		}
 	}
 	raw, e = call(startup, "mcpServerStatus/list", map[string]any{"threadId": thread.Thread.ID, "limit": 100})
 	if e != nil {

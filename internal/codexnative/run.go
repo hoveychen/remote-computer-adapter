@@ -119,7 +119,31 @@ func Run(c Config, args []string, rca string) error {
 	if e != nil {
 		return e
 	}
-	server := &http.Server{Handler: trustedstate.HTTPHandler(state, token), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second}
+	defer listener.Close()
+	nativeBytes := make([]byte, 32)
+	if _, e = rand.Read(nativeBytes); e != nil {
+		return e
+	}
+	nativeToken := hex.EncodeToString(nativeBytes)
+	backgroundBytes := make([]byte, 32)
+	if _, e = rand.Read(backgroundBytes); e != nil {
+		return e
+	}
+	backgroundToken := hex.EncodeToString(backgroundBytes)
+	installerBytes := make([]byte, 32)
+	if _, e = rand.Read(installerBytes); e != nil {
+		return e
+	}
+	installerToken := hex.EncodeToString(installerBytes)
+	native, bindThread, storeID, e := nativeService(state, nativeToken, backgroundToken, installerToken)
+	if e != nil {
+		listener.Close()
+		return e
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", trustedstate.HTTPHandler(state, token))
+	mux.Handle("/native/v2/", native)
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second}
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- server.Serve(listener) }()
 	defer func() {
@@ -131,13 +155,13 @@ func Run(c Config, args []string, rca string) error {
 	if e = atomicWrite(c.RuntimeHome, "environments.toml", environmentConfig(c, rca)); e != nil {
 		return e
 	}
-	if e = atomicWrite(c.RuntimeHome, "config.toml", harnessConfig(c, "http://"+listener.Addr().String()+"/mcp")); e != nil {
+	if e = atomicWrite(c.RuntimeHome, "config.toml", harnessConfig(c, "http://"+listener.Addr().String()+"/mcp")+nativeMemoryConfig("http://"+listener.Addr().String()+"/native/v2/", storeID)); e != nil {
 		return e
 	}
 	// app-server accepts environment-native cwd separately from local config cwd.
 	cmd := exec.Command(c.Binary, "app-server", "--strict-config")
 	cmd.Dir = filepath.Join(c.RuntimeHome, "work")
-	cmd.Env = harnessEnv(c, token)
+	cmd.Env = append(harnessEnv(c, token), "RCA_NATIVE_MEMORY_TOKEN="+nativeToken, "RCA_NATIVE_MEMORY_BACKGROUND_TOKEN="+backgroundToken, "RCA_NATIVE_SKILLS_INSTALLER_TOKEN="+installerToken)
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, e := cmd.StdinPipe()
@@ -170,7 +194,7 @@ func Run(c Config, args []string, rca string) error {
 		}
 	}()
 	sessionDone := make(chan error, 1)
-	go func() { sessionDone <- driveSession(ctx, c, args, stdin, stdout) }()
+	go func() { sessionDone <- driveNativeSession(ctx, c, args, stdin, stdout, bindThread) }()
 	select {
 	case e := <-sessionDone:
 		return e

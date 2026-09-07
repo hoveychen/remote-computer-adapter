@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -54,12 +53,16 @@ type journal interface {
 	Close() error
 }
 type Store struct {
-	mu       sync.Mutex
-	file     journal
-	objects  map[string]Object
-	requests map[string]record
-	sequence uint64
-	poisoned bool
+	mu               sync.Mutex
+	file             journal
+	objects          map[string]Object
+	requests         map[string]record
+	native           map[string]NativeResource
+	nativeRequests   map[string]nativeRecord
+	nativeJobs       map[string]NativeJob
+	memoryGeneration uint64
+	sequence         uint64
+	poisoned         bool
 }
 
 // Open refuses corrupt/incomplete journals rather than silently losing audit
@@ -95,25 +98,46 @@ func Open(root string) (*Store, error) {
 	if err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return fail(fmt.Errorf("state already in use: %w", err))
 	}
-	s := &Store{file: f, objects: map[string]Object{}, requests: map[string]record{}}
-	reader := bufio.NewReaderSize(f, 4096)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err == io.EOF && len(line) == 0 {
-			break
+	s := &Store{
+		file:           f,
+		objects:        map[string]Object{},
+		requests:       map[string]record{},
+		native:         map[string]NativeResource{},
+		nativeRequests: map[string]nativeRecord{},
+		nativeJobs:     map[string]NativeJob{},
+	}
+	reader := bufio.NewScanner(f)
+	reader.Buffer(make([]byte, 4096), NativeTransactionBytes+1)
+	// Preserve newline presence: a valid JSON object without its final newline
+	// is still an incomplete transaction, not a recoverable committed record.
+	reader.Split(journalLines)
+	for reader.Scan() {
+		line := reader.Bytes()
+		var envelope struct {
+			FormatVersion int `json:"format_version"`
 		}
-		if err != nil {
-			return fail(fmt.Errorf("incomplete audit journal: %w", err))
+		if err = json.Unmarshal(line, &envelope); err != nil {
+			return fail(err)
 		}
-		if len(line) > 16*MaxContent {
-			return fail(errors.New("oversize audit entry"))
+		if envelope.FormatVersion == 2 {
+			if err = s.replayNative(line); err != nil {
+				return fail(err)
+			}
+			continue
 		}
+		if envelope.FormatVersion != 0 && envelope.FormatVersion != 1 {
+			return fail(errors.New("unknown journal version"))
+		}
+
 		var r record
 		if err = json.Unmarshal(line, &r); err != nil {
 			return fail(fmt.Errorf("corrupt audit journal: %w", err))
 		}
 		if err = validate(r.Collection, r.Operation, r.Request); err != nil {
 			return fail(err)
+		}
+		if _, exists := s.nativeRequests[r.Request.RequestID]; exists {
+			return fail(errors.New("duplicate journal request"))
 		}
 		if _, exists := s.requests[r.Request.RequestID]; exists {
 			return fail(errors.New("duplicate journal request"))
@@ -123,6 +147,9 @@ func Open(root string) (*Store, error) {
 			return fail(errors.New("inconsistent audit journal"))
 		}
 		s.apply(r)
+	}
+	if err = reader.Err(); err != nil {
+		return fail(err)
 	}
 	// Persist directory entry as well as file contents before accepting mutations.
 	d, err := os.Open(root)
@@ -160,6 +187,10 @@ func (s *Store) evaluate(collection, op string, q Request) (uint64, Result) {
 		o.ID = q.ID
 	}
 	r := Result{Object: o}
+	if alias, ok := s.native["migration/legacy/"+collection+"/"+q.ID]; ok && !alias.Deleted {
+		r.Error = "migrated_read_only"
+		return o.Revision, r
+	}
 	if o.Revision != q.ExpectedRevision {
 		r.Error = "revision_conflict"
 		return o.Revision, r
@@ -191,6 +222,9 @@ func (s *Store) Mutate(collection, op string, q Request) (Result, error) {
 	if err := validate(collection, op, q); err != nil {
 		return Result{}, err
 	}
+	if _, ok := s.nativeRequests[q.RequestID]; ok {
+		return Result{}, errors.New("request_id reused across protocols")
+	}
 	if r, ok := s.requests[q.RequestID]; ok {
 		if r.Collection != collection || r.Operation != op || r.Request != q {
 			return Result{}, errors.New("request_id reused with different arguments")
@@ -199,21 +233,8 @@ func (s *Store) Mutate(collection, op string, q Request) (Result, error) {
 	}
 	before, result := s.evaluate(collection, op, q)
 	r := record{Sequence: s.sequence + 1, Time: time.Now().UTC().Format(time.RFC3339Nano), Collection: collection, Operation: op, Request: q, Before: before, Result: result}
-	data, err := json.Marshal(r)
-	if err != nil {
+	if err := s.appendRecord(r); err != nil {
 		return Result{}, err
-	}
-	data = append(data, '\n')
-	n, err := s.file.Write(data)
-	if err == nil && n != len(data) {
-		err = io.ErrShortWrite
-	}
-	if err == nil {
-		err = s.file.Sync()
-	}
-	if err != nil {
-		s.poisoned = true
-		return Result{}, fmt.Errorf("audit persistence failed; outcome uncertain: %w", err)
 	}
 	s.apply(r)
 	return result, nil
