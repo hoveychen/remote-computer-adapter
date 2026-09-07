@@ -53,14 +53,16 @@ type journal interface {
 	Close() error
 }
 type Store struct {
-	mu             sync.Mutex
-	file           journal
-	objects        map[string]Object
-	requests       map[string]record
-	native         map[string]NativeResource
-	nativeRequests map[string]nativeRecord
-	sequence       uint64
-	poisoned       bool
+	mu               sync.Mutex
+	file             journal
+	objects          map[string]Object
+	requests         map[string]record
+	native           map[string]NativeResource
+	nativeRequests   map[string]nativeRecord
+	nativeJobs       map[string]NativeJob
+	memoryGeneration uint64
+	sequence         uint64
+	poisoned         bool
 }
 
 // Open refuses corrupt/incomplete journals rather than silently losing audit
@@ -96,7 +98,14 @@ func Open(root string) (*Store, error) {
 	if err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return fail(fmt.Errorf("state already in use: %w", err))
 	}
-	s := &Store{file: f, objects: map[string]Object{}, requests: map[string]record{}, native: map[string]NativeResource{}, nativeRequests: map[string]nativeRecord{}}
+	s := &Store{
+		file:           f,
+		objects:        map[string]Object{},
+		requests:       map[string]record{},
+		native:         map[string]NativeResource{},
+		nativeRequests: map[string]nativeRecord{},
+		nativeJobs:     map[string]NativeJob{},
+	}
 	reader := bufio.NewScanner(f)
 	reader.Buffer(make([]byte, 4096), NativeTransactionBytes+1)
 	// Preserve newline presence: a valid JSON object without its final newline

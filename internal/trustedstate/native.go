@@ -2,6 +2,7 @@ package trustedstate
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,10 +53,35 @@ type NativeChange struct {
 	Deleted          bool           `json:"deleted,omitempty"`
 }
 type NativeRequest struct {
-	RequestID string         `json:"request_id"`
-	Actor     NativeActor    `json:"actor"`
-	Operation string         `json:"operation"`
-	Changes   []NativeChange `json:"changes"`
+	RequestID string            `json:"request_id"`
+	Actor     NativeActor       `json:"actor"`
+	Operation string            `json:"operation"`
+	Changes   []NativeChange    `json:"changes,omitempty"`
+	Job       *NativeJobCommand `json:"job,omitempty"`
+}
+
+type NativeJobCommand struct {
+	JobID         string `json:"job_id"`
+	Kind          string `json:"kind,omitempty"`
+	LeaseToken    string `json:"lease_token,omitempty"`
+	LeaseSeconds  uint32 `json:"lease_seconds,omitempty"`
+	TransactionID string `json:"transaction_id,omitempty"`
+	InputVersion  string `json:"input_version,omitempty"`
+	Failure       string `json:"failure,omitempty"`
+}
+
+type NativeJob struct {
+	JobID             string            `json:"job_id"`
+	Kind              string            `json:"kind"`
+	Revision          uint64            `json:"revision"`
+	Status            string            `json:"status"`
+	InputVersion      string            `json:"input_version,omitempty"`
+	LeaseToken        string            `json:"lease_token,omitempty"`
+	LeaseExpiresAt    string            `json:"lease_expires_at,omitempty"`
+	TransactionID     string            `json:"transaction_id,omitempty"`
+	MemoryGeneration  uint64            `json:"memory_generation"`
+	SelectedRevisions map[string]uint64 `json:"selected_revisions,omitempty"`
+	Failure           string            `json:"failure,omitempty"`
 }
 type NativeResource struct {
 	Domain   string         `json:"domain"`
@@ -67,10 +93,12 @@ type NativeResource struct {
 	Deleted  bool           `json:"deleted,omitempty"`
 }
 type NativeResult struct {
-	Status         string           `json:"status"`
-	CommitSequence uint64           `json:"commit_sequence"`
-	Error          string           `json:"error,omitempty"`
-	Resources      []NativeResource `json:"resources,omitempty"`
+	Status           string           `json:"status"`
+	CommitSequence   uint64           `json:"commit_sequence"`
+	Error            string           `json:"error,omitempty"`
+	Resources        []NativeResource `json:"resources,omitempty"`
+	Jobs             []NativeJob      `json:"jobs,omitempty"`
+	MemoryGeneration uint64           `json:"memory_generation,omitempty"`
 }
 type nativeRecord struct {
 	FormatVersion int           `json:"format_version"`
@@ -124,8 +152,14 @@ func normalizeNative(q NativeRequest) (NativeRequest, string, error) {
 	if len(q.Actor.ThreadID) > 128 || len(q.Actor.CallID) > 128 {
 		return q, "", errors.New("actor identity too long")
 	}
-	if len(q.Changes) == 0 || len(q.Changes) > NativeTransactionChanges {
+	if (len(q.Changes) == 0 && q.Job == nil) || len(q.Changes) > NativeTransactionChanges {
 		return q, "", errors.New("invalid change count")
+	}
+	if q.Job != nil {
+		j := q.Job
+		if !logicalID.MatchString(j.JobID) || (j.Kind != "" && j.Kind != "stage1" && j.Kind != "phase2") || len(j.LeaseToken) > 128 || len(j.TransactionID) > 128 || len(j.InputVersion) > 256 || len(j.Failure) > 1024 || j.LeaseSeconds > 3600 {
+			return q, "", errors.New("invalid job command")
+		}
 	}
 	total := 0
 	seen := map[string]bool{}
@@ -196,32 +230,223 @@ func normalizeNative(q NativeRequest) (NativeRequest, string, error) {
 	}
 	return out, hashBytes(data), nil
 }
-func (s *Store) evaluateNative(q NativeRequest) NativeResult {
+func randomNativeToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func memoryDomain(domain string) bool {
+	return strings.HasPrefix(domain, "memory.")
+}
+
+func cloneNativeJob(j NativeJob) NativeJob {
+	b, _ := json.Marshal(j)
+	var out NativeJob
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+func (s *Store) stage1Selection() map[string]uint64 {
+	out := map[string]uint64{}
+	for k, r := range s.native {
+		if r.Domain == "memory.stage1" && !r.Deleted {
+			out[k] = r.Revision
+		}
+	}
+	return out
+}
+
+func validLease(j NativeJob, token string, now time.Time) bool {
+	if j.Status != "leased" || token == "" || token != j.LeaseToken {
+		return false
+	}
+	expires, err := time.Parse(time.RFC3339Nano, j.LeaseExpiresAt)
+	return err == nil && now.Before(expires)
+}
+
+func (s *Store) evaluateNative(q NativeRequest, now time.Time, replay *NativeResult) (NativeResult, error) {
 	result := NativeResult{Status: "rejected", CommitSequence: s.sequence + 1}
+	if q.Job != nil {
+		result.MemoryGeneration = s.memoryGeneration
+	}
 	if reason := s.validateLegacyAlias(q); reason != "" {
 		result.Error = reason
-		return result
+		return result, nil
 	}
 	for _, c := range q.Changes {
 		old := s.native[nativeKey(c.Domain, c.Key)]
 		if old.Revision != c.ExpectedRevision {
 			result.Error = "revision_conflict"
-			return result
+			return result, nil
 		}
 		if old.Revision == ^uint64(0) {
 			result.Error = "revision_exhausted"
-			return result
+			return result, nil
 		}
 		if c.Deleted && (old.Revision == 0 || old.Deleted) {
 			result.Error = "not_found"
-			return result
+			return result, nil
 		}
 	}
 	if !s.validMemoryPaths(q) {
 		result.Error = "memory_path_conflict"
-		return result
+		return result, nil
+	}
+	if q.Job != nil {
+		cmd := q.Job
+		old, exists := s.nativeJobs[cmd.JobID]
+		job := cloneNativeJob(old)
+		reject := func(reason string) (NativeResult, error) {
+			result.Error = reason
+			return result, nil
+		}
+		switch q.Operation {
+		case "memory.stage1.enqueue":
+			if exists || cmd.Kind != "stage1" || cmd.InputVersion == "" || len(q.Changes) != 0 {
+				return reject("job_conflict")
+			}
+			job = NativeJob{JobID: cmd.JobID, Kind: "stage1", Revision: 1, Status: "queued", InputVersion: cmd.InputVersion, MemoryGeneration: s.memoryGeneration}
+		case "memory.job.claim":
+			if !exists || cmd.LeaseSeconds == 0 || len(q.Changes) != 0 || (cmd.Kind != "" && cmd.Kind != old.Kind) {
+				return reject("job_conflict")
+			}
+			if old.Status == "leased" {
+				expires, err := time.Parse(time.RFC3339Nano, old.LeaseExpiresAt)
+				if err != nil || now.Before(expires) {
+					return reject("lease_unavailable")
+				}
+			} else if old.Status != "queued" && old.Status != "failed" {
+				return reject("job_conflict")
+			}
+			token := ""
+			if replay != nil && len(replay.Jobs) == 1 {
+				token = replay.Jobs[0].LeaseToken
+			} else {
+				var err error
+				token, err = randomNativeToken()
+				if err != nil {
+					return NativeResult{}, err
+				}
+			}
+			if len(token) != 64 {
+				return NativeResult{}, errors.New("invalid replay lease token")
+			}
+			job.Revision++
+			job.Status = "leased"
+			job.LeaseToken = token
+			job.LeaseExpiresAt = now.Add(time.Duration(cmd.LeaseSeconds) * time.Second).Format(time.RFC3339Nano)
+			job.Failure = ""
+			job.MemoryGeneration = s.memoryGeneration
+		case "memory.job.heartbeat":
+			if !exists || cmd.LeaseSeconds == 0 || len(q.Changes) != 0 || !validLease(old, cmd.LeaseToken, now) {
+				return reject("lease_lost")
+			}
+			job.Revision++
+			job.LeaseExpiresAt = now.Add(time.Duration(cmd.LeaseSeconds) * time.Second).Format(time.RFC3339Nano)
+		case "memory.job.fail":
+			if !exists || len(q.Changes) != 0 || !validLease(old, cmd.LeaseToken, now) {
+				return reject("lease_lost")
+			}
+			job.Revision++
+			job.Status = "failed"
+			job.Failure = cmd.Failure
+			job.LeaseToken = ""
+			job.LeaseExpiresAt = ""
+		case "memory.stage1.commit":
+			if !exists || old.Kind != "stage1" || !validLease(old, cmd.LeaseToken, now) || len(q.Changes) != 2 {
+				return reject("lease_lost")
+			}
+			seenRaw, seenSummary := false, false
+			for _, c := range q.Changes {
+				seenRaw = seenRaw || (c.Domain == "memory.stage1" && c.Key == "raw/"+cmd.JobID+".md")
+				seenSummary = seenSummary || (c.Domain == "memory.stage1" && c.Key == "summary/"+cmd.JobID+".md")
+			}
+			if !seenRaw || !seenSummary {
+				return reject("invalid_stage1_artifacts")
+			}
+			job.Revision++
+			job.Status = "succeeded"
+			job.LeaseToken, job.LeaseExpiresAt = "", ""
+			phase2, ok := s.nativeJobs["global"]
+			if !ok {
+				phase2 = NativeJob{JobID: "global", Kind: "phase2", Revision: 1, Status: "queued"}
+			} else if phase2.Status == "succeeded" || phase2.Status == "failed" {
+				phase2.Revision++
+				phase2.Status = "queued"
+				phase2.Failure = ""
+			}
+			result.Jobs = append(result.Jobs, job, phase2)
+		case "memory.phase2.begin":
+			if !exists || old.Kind != "phase2" || cmd.LeaseSeconds == 0 || len(q.Changes) != 0 {
+				return reject("job_conflict")
+			}
+			if old.Status == "leased" {
+				expires, err := time.Parse(time.RFC3339Nano, old.LeaseExpiresAt)
+				if err != nil || now.Before(expires) {
+					return reject("lease_unavailable")
+				}
+			} else if old.Status != "queued" && old.Status != "failed" {
+				return reject("job_conflict")
+			}
+			lease, tx := "", ""
+			if replay != nil && len(replay.Jobs) == 1 {
+				lease, tx = replay.Jobs[0].LeaseToken, replay.Jobs[0].TransactionID
+			} else {
+				var err error
+				lease, err = randomNativeToken()
+				if err != nil {
+					return NativeResult{}, err
+				}
+				tx, err = randomNativeToken()
+				if err != nil {
+					return NativeResult{}, err
+				}
+			}
+			if len(lease) != 64 || len(tx) != 64 {
+				return NativeResult{}, errors.New("invalid replay phase2 token")
+			}
+			job.Revision++
+			job.Status = "leased"
+			job.LeaseToken = lease
+			job.TransactionID = tx
+			job.LeaseExpiresAt = now.Add(time.Duration(cmd.LeaseSeconds) * time.Second).Format(time.RFC3339Nano)
+			job.MemoryGeneration = s.memoryGeneration
+			job.SelectedRevisions = s.stage1Selection()
+			job.Failure = ""
+		case "memory.phase2.commit":
+			if !exists || old.Kind != "phase2" || !validLease(old, cmd.LeaseToken, now) || cmd.TransactionID == "" || cmd.TransactionID != old.TransactionID || old.MemoryGeneration != s.memoryGeneration || !reflect.DeepEqual(old.SelectedRevisions, s.stage1Selection()) || len(q.Changes) != 2 {
+				return reject("stale_consolidation")
+			}
+			required := map[string]bool{"MEMORY.md": false, "memory_summary.md": false}
+			for _, c := range q.Changes {
+				if c.Domain != "memory.artifact" {
+					return reject("invalid_consolidation_artifacts")
+				}
+				if _, ok := required[c.Key]; !ok {
+					return reject("invalid_consolidation_artifacts")
+				}
+				required[c.Key] = true
+			}
+			if !required["MEMORY.md"] || !required["memory_summary.md"] {
+				return reject("invalid_consolidation_artifacts")
+			}
+			job.Revision++
+			job.Status = "succeeded"
+			job.LeaseToken, job.LeaseExpiresAt, job.TransactionID = "", "", ""
+		default:
+			return NativeResult{}, errors.New("operation does not accept job command")
+		}
+		if q.Operation != "memory.stage1.commit" {
+			result.Jobs = append(result.Jobs, job)
+		}
+	} else if strings.HasPrefix(q.Operation, "memory.job.") || strings.HasPrefix(q.Operation, "memory.stage1.") || strings.HasPrefix(q.Operation, "memory.phase2.") {
+		return NativeResult{}, errors.New("job command required")
 	}
 	result.Status = "committed"
+	hasMemoryChange := false
 	for _, c := range q.Changes {
 		r := NativeResource{Domain: c.Domain, Key: c.Key, Revision: c.ExpectedRevision + 1, Content: c.Content, Package: c.Package, Deleted: c.Deleted, SHA256: hashBytes(c.Content)}
 		if c.Package != nil {
@@ -229,13 +454,33 @@ func (s *Store) evaluateNative(q NativeRequest) NativeResult {
 			r.SHA256 = hashBytes(b)
 		}
 		result.Resources = append(result.Resources, r)
+		hasMemoryChange = hasMemoryChange || memoryDomain(c.Domain)
 	}
-	return result
+	if hasMemoryChange && q.Job != nil {
+		result.MemoryGeneration = s.memoryGeneration + 1
+		for i := range result.Jobs {
+			if result.Jobs[i].Status == "succeeded" {
+				result.Jobs[i].MemoryGeneration = result.MemoryGeneration
+			}
+		}
+	}
+	return result, nil
 }
 func (s *Store) applyNative(r nativeRecord) {
 	if r.Result.Error == "" {
+		hasMemoryChange := false
 		for _, o := range r.Result.Resources {
 			s.native[nativeKey(o.Domain, o.Key)] = o
+			hasMemoryChange = hasMemoryChange || memoryDomain(o.Domain)
+		}
+		for _, j := range r.Result.Jobs {
+			s.nativeJobs[j.JobID] = cloneNativeJob(j)
+		}
+		if hasMemoryChange {
+			s.memoryGeneration++
+		}
+		if r.Request.Job != nil && r.Result.MemoryGeneration != s.memoryGeneration {
+			s.poisoned = true
 		}
 	}
 	s.nativeRequests[r.Request.RequestID] = r
@@ -268,8 +513,12 @@ func (s *Store) NativeBatch(q NativeRequest) (NativeResult, error) {
 		}
 		return cloneNativeResult(r.Result), nil
 	}
-	result := s.evaluateNative(q)
-	r := nativeRecord{FormatVersion: 2, Kind: "native_transaction", Sequence: s.sequence + 1, Time: time.Now().UTC().Format(time.RFC3339Nano), Request: q, RequestDigest: digest, Result: result}
+	now := time.Now().UTC()
+	result, err := s.evaluateNative(q, now, nil)
+	if err != nil {
+		return NativeResult{}, err
+	}
+	r := nativeRecord{FormatVersion: 2, Kind: "native_transaction", Sequence: s.sequence + 1, Time: now.Format(time.RFC3339Nano), Request: q, RequestDigest: digest, Result: result}
 	// The request already holds all replayable bytes. Persist the receipt
 	// without duplicating content; reconstruct resources during replay.
 	durable := r
@@ -279,6 +528,22 @@ func (s *Store) NativeBatch(q NativeRequest) (NativeResult, error) {
 	}
 	s.applyNative(r)
 	return cloneNativeResult(result), nil
+}
+
+func (s *Store) NativeJobRead(jobID string) (NativeJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.poisoned {
+		return NativeJob{}, errors.New("state unavailable")
+	}
+	if !logicalID.MatchString(jobID) {
+		return NativeJob{}, errors.New("invalid job id")
+	}
+	j, ok := s.nativeJobs[jobID]
+	if !ok {
+		return NativeJob{}, errors.New("not_found")
+	}
+	return cloneNativeJob(j), nil
 }
 func (s *Store) NativeRead(domain, key string, revision uint64) (NativeResource, error) {
 	s.mu.Lock()
@@ -341,7 +606,14 @@ func (s *Store) replayNative(line []byte) error {
 	if err != nil {
 		return err
 	}
-	expected := s.evaluateNative(q)
+	recordTime, err := time.Parse(time.RFC3339Nano, r.Time)
+	if err != nil {
+		return errors.New("invalid native transaction time")
+	}
+	expected, err := s.evaluateNative(q, recordTime, &r.Result)
+	if err != nil {
+		return err
+	}
 	receipt := expected
 	receipt.Resources = nil
 	if digest != r.RequestDigest || !reflect.DeepEqual(q, r.Request) || !reflect.DeepEqual(receipt, r.Result) {

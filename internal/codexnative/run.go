@@ -125,7 +125,12 @@ func Run(c Config, args []string, rca string) error {
 		return e
 	}
 	nativeToken := hex.EncodeToString(nativeBytes)
-	native, bindThread, storeID, e := nativeService(state, nativeToken)
+	backgroundBytes := make([]byte, 32)
+	if _, e = rand.Read(backgroundBytes); e != nil {
+		return e
+	}
+	backgroundToken := hex.EncodeToString(backgroundBytes)
+	native, bindThread, storeID, e := nativeService(state, nativeToken, backgroundToken)
 	if e != nil {
 		listener.Close()
 		return e
@@ -151,7 +156,7 @@ func Run(c Config, args []string, rca string) error {
 	// app-server accepts environment-native cwd separately from local config cwd.
 	cmd := exec.Command(c.Binary, "app-server", "--strict-config")
 	cmd.Dir = filepath.Join(c.RuntimeHome, "work")
-	cmd.Env = append(harnessEnv(c, token), "RCA_NATIVE_MEMORY_TOKEN="+nativeToken)
+	cmd.Env = append(harnessEnv(c, token), "RCA_NATIVE_MEMORY_TOKEN="+nativeToken, "RCA_NATIVE_MEMORY_BACKGROUND_TOKEN="+backgroundToken)
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, e := cmd.StdinPipe()

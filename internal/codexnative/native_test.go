@@ -21,7 +21,7 @@ func TestNativeServiceBindsActualThreadAndReplaysReceipt(t *testing.T) {
 	}
 	defer state.Close()
 	token := strings.Repeat("n", 64)
-	handler, bind, storeID, err := nativeService(state, token)
+	handler, bind, storeID, err := nativeService(state, token, strings.Repeat("b", 64))
 	if err != nil {
 		t.Fatal(err)
 	}

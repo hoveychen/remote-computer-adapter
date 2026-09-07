@@ -92,6 +92,23 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 			return true
 		}
 		var result any
+		requireBackground := func() bool {
+			if subject.Kind != "background" {
+				http.Error(w, "role not authorized", 403)
+				return false
+			}
+			return true
+		}
+		setReceipt := func(receipt NativeResult, err error) {
+			e = err
+			if e == nil && receipt.Error != "" {
+				e = errors.New(receipt.Error)
+			}
+			if e == nil {
+				w.Header().Set("X-RCA-Commit-Sequence", jsonNumber(receipt.CommitSequence))
+				result = receipt
+			}
+		}
 		switch r.URL.Path {
 		case "/native/v2/handshake":
 			var q struct{}
@@ -102,6 +119,8 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 				caps := []string{"native_memory_read"}
 				if subject.Kind == "model_tool" {
 					caps = append(caps, "native_memory_note")
+				} else if subject.Kind == "background" {
+					caps = append(caps, "native_memory_jobs", "native_memory_consolidation")
 				}
 				result = map[string]any{"protocol": 2, "store_id": identity, "capabilities": caps, "limits": map[string]int{"resource_bytes": NativeResourceBytes, "page_bytes": NativePageBytes}}
 			}
@@ -151,6 +170,111 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 				return
 			}
 			result, e = s.MemoryRead(MemoryReadRequest{Path: "memory_summary.md", LineOffset: 1})
+		case "/native/v2/memory.stage1.enqueue":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID    string `json:"request_id"`
+				JobID        string `json:"job_id"`
+				InputVersion string `json:"input_version"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryStage1Enqueue(q.RequestID, q.JobID, q.InputVersion))
+		case "/native/v2/memory.job.claim":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID    string `json:"request_id"`
+				JobID        string `json:"job_id"`
+				LeaseSeconds uint32 `json:"lease_seconds"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryJobClaim(q.RequestID, q.JobID, q.LeaseSeconds))
+		case "/native/v2/memory.job.heartbeat":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID    string `json:"request_id"`
+				JobID        string `json:"job_id"`
+				LeaseToken   string `json:"lease_token"`
+				LeaseSeconds uint32 `json:"lease_seconds"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryJobHeartbeat(q.RequestID, q.JobID, q.LeaseToken, q.LeaseSeconds))
+		case "/native/v2/memory.job.fail":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID  string `json:"request_id"`
+				JobID      string `json:"job_id"`
+				LeaseToken string `json:"lease_token"`
+				Reason     string `json:"reason"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryJobFail(q.RequestID, q.JobID, q.LeaseToken, q.Reason))
+		case "/native/v2/memory.stage1.commit":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID      string `json:"request_id"`
+				JobID          string `json:"job_id"`
+				LeaseToken     string `json:"lease_token"`
+				RawMemory      string `json:"raw_memory"`
+				RolloutSummary string `json:"rollout_summary"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryStage1Commit(q.RequestID, q.JobID, q.LeaseToken, q.RawMemory, q.RolloutSummary))
+		case "/native/v2/memory.phase2.begin":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID    string `json:"request_id"`
+				LeaseSeconds uint32 `json:"lease_seconds"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryPhase2Begin(q.RequestID, q.LeaseSeconds))
+		case "/native/v2/memory.phase2.commit":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID     string `json:"request_id"`
+				LeaseToken    string `json:"lease_token"`
+				TransactionID string `json:"transaction_id"`
+				Memory        string `json:"memory"`
+				Summary       string `json:"summary"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryPhase2Commit(q.RequestID, q.LeaseToken, q.TransactionID, q.Memory, q.Summary))
+		case "/native/v2/memory.projection":
+			if !requireBackground() {
+				return
+			}
+			var q struct{}
+			if !decode(&q) {
+				return
+			}
+			result, e = s.MemoryProjection()
 		default:
 			http.NotFound(w, r)
 			return
@@ -159,7 +283,7 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 			status := 400
 			if strings.Contains(e.Error(), "unavailable") || strings.Contains(e.Error(), "persistence failed") {
 				status = 503
-			} else if e.Error() == "snapshot_expired" || e.Error() == "revision_conflict" {
+			} else if e.Error() == "snapshot_expired" || e.Error() == "revision_conflict" || e.Error() == "lease_lost" || e.Error() == "lease_unavailable" || e.Error() == "stale_consolidation" || e.Error() == "job_conflict" {
 				status = 409
 			} else if e.Error() == "not_found" {
 				status = 404

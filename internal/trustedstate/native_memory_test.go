@@ -219,6 +219,21 @@ func TestNativeHTTPAuthScopesAndSummary(t *testing.T) {
 	}
 	var identity map[string]any
 	_ = json.Unmarshal(handshake.Body.Bytes(), &identity)
+	backgroundHandshake := call(h, backgroundToken, "/native/v2/handshake", "{}")
+	if backgroundHandshake.Code != 200 || !strings.Contains(backgroundHandshake.Body.String(), "native_memory_jobs") || !strings.Contains(backgroundHandshake.Body.String(), "native_memory_consolidation") {
+		t.Fatal(backgroundHandshake.Code, backgroundHandshake.Body.String())
+	}
+	enqueueBody := `{"request_id":"enqueue-http","job_id":"rollout-http","input_version":"v1"}`
+	if w := call(h, modelToken, "/native/v2/memory.stage1.enqueue", enqueueBody); w.Code != 403 {
+		t.Fatal("model token reached background endpoint", w.Code)
+	}
+	if w := call(h, backgroundToken, "/native/v2/memory.stage1.enqueue", enqueueBody); w.Code != 200 || w.Header().Get("X-RCA-Commit-Sequence") == "" {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	claimHTTP := call(h, backgroundToken, "/native/v2/memory.job.claim", `{"request_id":"claim-http","job_id":"rollout-http","lease_seconds":60}`)
+	if claimHTTP.Code != 200 || !strings.Contains(claimHTTP.Body.String(), "lease_token") || strings.Contains(claimHTTP.Body.String(), strings.Repeat("m", 32)) {
+		t.Fatal(claimHTTP.Code, claimHTTP.Body.String())
+	}
 	for _, token := range []string{"", strings.Repeat("x", 32)} {
 		if w := call(h, token, "/native/v2/handshake", "{}"); w.Code != 401 {
 			t.Fatal(w.Code)
