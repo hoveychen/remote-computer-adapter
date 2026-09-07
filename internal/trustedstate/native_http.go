@@ -246,11 +246,12 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 			var q struct {
 				RequestID    string `json:"request_id"`
 				LeaseSeconds uint32 `json:"lease_seconds"`
+				MaxInputs    uint32 `json:"max_inputs"`
 			}
 			if !decode(&q) {
 				return
 			}
-			setReceipt(s.MemoryPhase2Begin(q.RequestID, q.LeaseSeconds))
+			setReceipt(s.MemoryPhase2Begin(q.RequestID, q.LeaseSeconds, q.MaxInputs))
 		case "/native/v2/memory.phase2.commit":
 			if !requireBackground() {
 				return
@@ -270,11 +271,31 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 			if !requireBackground() {
 				return
 			}
-			var q struct{}
+			var q struct {
+				IncludeResources *bool `json:"include_resources"`
+			}
 			if !decode(&q) {
 				return
 			}
 			result, e = s.MemoryProjection()
+			if e == nil && q.IncludeResources != nil && !*q.IncludeResources {
+				projection := result.(MemoryProjection)
+				projection.Resources = nil
+				result = projection
+			}
+		case "/native/v2/memory.resource.read":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				Domain   string `json:"domain"`
+				Key      string `json:"key"`
+				Revision uint64 `json:"revision"`
+			}
+			if !decode(&q) {
+				return
+			}
+			result, e = s.NativeRead(q.Domain, q.Key, q.Revision)
 		default:
 			http.NotFound(w, r)
 			return

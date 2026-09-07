@@ -68,6 +68,7 @@ type NativeJobCommand struct {
 	TransactionID string `json:"transaction_id,omitempty"`
 	InputVersion  string `json:"input_version,omitempty"`
 	Failure       string `json:"failure,omitempty"`
+	MaxInputs     uint32 `json:"max_inputs,omitempty"`
 }
 
 type NativeJob struct {
@@ -82,6 +83,7 @@ type NativeJob struct {
 	MemoryGeneration  uint64            `json:"memory_generation"`
 	SelectedRevisions map[string]uint64 `json:"selected_revisions,omitempty"`
 	Failure           string            `json:"failure,omitempty"`
+	SelectionLimit    uint32            `json:"selection_limit,omitempty"`
 }
 type NativeResource struct {
 	Domain   string         `json:"domain"`
@@ -157,7 +159,7 @@ func normalizeNative(q NativeRequest) (NativeRequest, string, error) {
 	}
 	if q.Job != nil {
 		j := q.Job
-		if !logicalID.MatchString(j.JobID) || (j.Kind != "" && j.Kind != "stage1" && j.Kind != "phase2") || len(j.LeaseToken) > 128 || len(j.TransactionID) > 128 || len(j.InputVersion) > 256 || len(j.Failure) > 1024 || j.LeaseSeconds > 3600 {
+		if !logicalID.MatchString(j.JobID) || (j.Kind != "" && j.Kind != "stage1" && j.Kind != "phase2") || len(j.LeaseToken) > 128 || len(j.TransactionID) > 128 || len(j.InputVersion) > 256 || len(j.Failure) > 1024 || j.LeaseSeconds > 3600 || j.MaxInputs > 10_000 {
 			return q, "", errors.New("invalid job command")
 		}
 	}
@@ -249,11 +251,33 @@ func cloneNativeJob(j NativeJob) NativeJob {
 	return out
 }
 
-func (s *Store) stage1Selection() map[string]uint64 {
+func (s *Store) stage1Selection(limit uint32) map[string]uint64 {
 	out := map[string]uint64{}
-	for k, r := range s.native {
-		if r.Domain == "memory.stage1" && !r.Deleted {
-			out[k] = r.Revision
+	type candidate struct {
+		id       string
+		revision uint64
+	}
+	var candidates []candidate
+	for id, job := range s.nativeJobs {
+		if job.Kind == "stage1" && job.Status == "succeeded" {
+			candidates = append(candidates, candidate{id: id, revision: job.Revision})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].revision != candidates[j].revision {
+			return candidates[i].revision > candidates[j].revision
+		}
+		return candidates[i].id > candidates[j].id
+	})
+	if limit > 0 && uint32(len(candidates)) > limit {
+		candidates = candidates[:limit]
+	}
+	for _, candidate := range candidates {
+		for _, key := range []string{"raw/" + candidate.id + ".md", "summary/" + candidate.id + ".md"} {
+			resource := s.native[nativeKey("memory.stage1", key)]
+			if resource.Revision != 0 && !resource.Deleted {
+				out[nativeKey("memory.stage1", key)] = resource.Revision
+			}
 		}
 	}
 	return out
@@ -424,10 +448,11 @@ func (s *Store) evaluateNative(q NativeRequest, now time.Time, replay *NativeRes
 			job.TransactionID = tx
 			job.LeaseExpiresAt = now.Add(time.Duration(cmd.LeaseSeconds) * time.Second).Format(time.RFC3339Nano)
 			job.MemoryGeneration = s.memoryGeneration
-			job.SelectedRevisions = s.stage1Selection()
+			job.SelectionLimit = cmd.MaxInputs
+			job.SelectedRevisions = s.stage1Selection(cmd.MaxInputs)
 			job.Failure = ""
 		case "memory.phase2.commit":
-			if !exists || old.Kind != "phase2" || !validLease(old, cmd.LeaseToken, now) || cmd.TransactionID == "" || cmd.TransactionID != old.TransactionID || old.MemoryGeneration != s.memoryGeneration || !reflect.DeepEqual(old.SelectedRevisions, s.stage1Selection()) || len(q.Changes) != 2 {
+			if !exists || old.Kind != "phase2" || !validLease(old, cmd.LeaseToken, now) || cmd.TransactionID == "" || cmd.TransactionID != old.TransactionID || old.MemoryGeneration != s.memoryGeneration || !reflect.DeepEqual(old.SelectedRevisions, s.stage1Selection(old.SelectionLimit)) || len(q.Changes) != 2 {
 				return reject("stale_consolidation")
 			}
 			required := map[string]bool{"MEMORY.md": false, "memory_summary.md": false}

@@ -3,6 +3,7 @@ package trustedstate
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -245,5 +246,25 @@ func TestNativeStage1InputVersionRefreshesCanonicalOutput(t *testing.T) {
 	raw, err := s.NativeRead("memory.stage1", "raw/rollout.md", 2)
 	if err != nil || string(raw.Content) != "new raw" {
 		t.Fatal(raw, err)
+	}
+}
+
+func TestNativePhase2LeaseBindsConfiguredInputLimit(t *testing.T) {
+	s, _ := openTest(t)
+	for _, id := range []string{"a", "b"} {
+		committedJob(t, s, jobRequest("enqueue-"+id, "memory.stage1.enqueue", NativeJobCommand{JobID: id, Kind: "stage1", InputVersion: "v1"}))
+		claim := committedJob(t, s, jobRequest("claim-"+id, "memory.job.claim", NativeJobCommand{JobID: id, LeaseSeconds: 60})).Jobs[0]
+		committedJob(t, s, jobRequest("commit-"+id, "memory.stage1.commit", NativeJobCommand{JobID: id, LeaseToken: claim.LeaseToken},
+			NativeChange{Domain: "memory.stage1", Key: "raw/" + id + ".md", Content: []byte("raw " + id)},
+			NativeChange{Domain: "memory.stage1", Key: "summary/" + id + ".md", Content: []byte("summary " + id)}))
+	}
+	begin := committedJob(t, s, jobRequest("begin-limited", "memory.phase2.begin", NativeJobCommand{JobID: "global", LeaseSeconds: 60, MaxInputs: 1})).Jobs[0]
+	if begin.SelectionLimit != 1 || len(begin.SelectedRevisions) != 2 {
+		t.Fatalf("phase2 lease did not bind one complete stage1 pair: %+v", begin)
+	}
+	for key := range begin.SelectedRevisions {
+		if !strings.HasSuffix(key, "/b.md") {
+			t.Fatalf("stable tie-break did not select the newest key: %+v", begin.SelectedRevisions)
+		}
 	}
 }

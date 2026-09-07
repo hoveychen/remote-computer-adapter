@@ -263,6 +263,17 @@ func TestNativeHTTPAuthScopesAndSummary(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	batch(t, s, nativeQ("summary", NativeChange{Domain: "memory.artifact", Key: "memory_summary.md", Content: []byte("canonical summary")}))
+	if w = call(h, modelToken, "/native/v2/memory.resource.read", `{"domain":"memory.artifact","key":"memory_summary.md","revision":1}`); w.Code != 403 {
+		t.Fatal("model token reached raw resource endpoint", w.Code)
+	}
+	resource := call(h, backgroundToken, "/native/v2/memory.resource.read", `{"domain":"memory.artifact","key":"memory_summary.md","revision":1}`)
+	if resource.Code != 200 || !strings.Contains(resource.Body.String(), "Y2Fub25pY2FsIHN1bW1hcnk=") {
+		t.Fatal(resource.Code, resource.Body.String())
+	}
+	projection := call(h, backgroundToken, "/native/v2/memory.projection", `{"include_resources":false}`)
+	if projection.Code != 200 || strings.Contains(projection.Body.String(), "canonical summary") || strings.Contains(projection.Body.String(), "content_base64") {
+		t.Fatal(projection.Code, projection.Body.String())
+	}
 	summary := call(h, modelToken, "/native/v2/memory.summary.read", "{}")
 	read := call(h, modelToken, "/native/v2/memory.read", `{"path":"memory_summary.md","line_offset":1}`)
 	if summary.Code != 200 || !bytes.Equal(summary.Body.Bytes(), read.Body.Bytes()) {

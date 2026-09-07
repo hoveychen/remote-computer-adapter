@@ -10,7 +10,7 @@ type MemoryProjection struct {
 	CommitSequence   uint64           `json:"commit_sequence"`
 	MemoryGeneration uint64           `json:"memory_generation"`
 	Jobs             []NativeJob      `json:"jobs"`
-	Resources        []NativeResource `json:"resources"`
+	Resources        []NativeResource `json:"resources,omitempty"`
 }
 
 func backgroundRequest(requestID, operation string, cmd NativeJobCommand, changes ...NativeChange) NativeRequest {
@@ -45,8 +45,8 @@ func (s *Store) MemoryStage1Commit(requestID, jobID, leaseToken, rawMemory, roll
 		NativeChange{Domain: "memory.stage1", Key: "summary/" + jobID + ".md", ExpectedRevision: summaryRevision, Content: []byte(rolloutSummary)}))
 }
 
-func (s *Store) MemoryPhase2Begin(requestID string, leaseSeconds uint32) (NativeResult, error) {
-	return s.NativeBatch(backgroundRequest(requestID, "memory.phase2.begin", NativeJobCommand{JobID: "global", LeaseSeconds: leaseSeconds}))
+func (s *Store) MemoryPhase2Begin(requestID string, leaseSeconds, maxInputs uint32) (NativeResult, error) {
+	return s.NativeBatch(backgroundRequest(requestID, "memory.phase2.begin", NativeJobCommand{JobID: "global", LeaseSeconds: leaseSeconds, MaxInputs: maxInputs}))
 }
 
 func (s *Store) nativeRevision(domain, key string) uint64 {
