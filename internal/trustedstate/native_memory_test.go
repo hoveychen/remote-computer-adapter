@@ -223,7 +223,7 @@ func TestNativeHTTPAuthScopesAndSummary(t *testing.T) {
 	if backgroundHandshake.Code != 200 || !strings.Contains(backgroundHandshake.Body.String(), "native_memory_jobs") || !strings.Contains(backgroundHandshake.Body.String(), "native_memory_consolidation") {
 		t.Fatal(backgroundHandshake.Code, backgroundHandshake.Body.String())
 	}
-	enqueueBody := `{"request_id":"enqueue-http","job_id":"rollout-http","input_version":"v1"}`
+	enqueueBody := `{"request_id":"enqueue-http","job_id":"rollout-http","input_version":"v1","input_watermark":1}`
 	if w := call(h, modelToken, "/native/v2/memory.stage1.enqueue", enqueueBody); w.Code != 403 {
 		t.Fatal("model token reached background endpoint", w.Code)
 	}
@@ -233,6 +233,24 @@ func TestNativeHTTPAuthScopesAndSummary(t *testing.T) {
 	claimHTTP := call(h, backgroundToken, "/native/v2/memory.job.claim", `{"request_id":"claim-http","job_id":"rollout-http","lease_seconds":60}`)
 	if claimHTTP.Code != 200 || !strings.Contains(claimHTTP.Body.String(), "lease_token") || strings.Contains(claimHTTP.Body.String(), strings.Repeat("m", 32)) {
 		t.Fatal(claimHTTP.Code, claimHTTP.Body.String())
+	}
+	var claimResult NativeResult
+	if e = json.Unmarshal(claimHTTP.Body.Bytes(), &claimResult); e != nil {
+		t.Fatal(e)
+	}
+	commitBody := fmt.Sprintf(`{"request_id":"commit-http","job_id":"rollout-http","lease_token":%q,"raw_memory":"raw","rollout_summary":"summary"}`, claimResult.Jobs[0].LeaseToken)
+	if w := call(h, backgroundToken, "/native/v2/memory.stage1.commit", commitBody); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	usageBody := `{"request_id":"usage-http","job_ids":["rollout-http"]}`
+	if w := call(h, modelToken, "/native/v2/memory.usage.record", usageBody); w.Code != 403 {
+		t.Fatal("model token reached usage endpoint", w.Code)
+	}
+	if w := call(h, backgroundToken, "/native/v2/memory.usage.record", usageBody); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := call(h, backgroundToken, "/native/v2/memory.retention", `{"request_id":"retention-http","max_unused_days":1,"limit":10}`); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
 	}
 	for _, token := range []string{"", strings.Repeat("x", 32)} {
 		if w := call(h, token, "/native/v2/handshake", "{}"); w.Code != 401 {
@@ -278,6 +296,13 @@ func TestNativeHTTPAuthScopesAndSummary(t *testing.T) {
 	read := call(h, modelToken, "/native/v2/memory.read", `{"path":"memory_summary.md","line_offset":1}`)
 	if summary.Code != 200 || !bytes.Equal(summary.Body.Bytes(), read.Body.Bytes()) {
 		t.Fatal(summary.Body.String(), read.Body.String())
+	}
+	clearBody := `{"request_id":"clear-http"}`
+	if w = call(h, modelToken, "/native/v2/memory.clear", clearBody); w.Code != 403 {
+		t.Fatal("model token reached clear endpoint", w.Code)
+	}
+	if w = call(h, backgroundToken, "/native/v2/memory.clear", clearBody); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
 	}
 	s.Close()
 	if w = call(h, modelToken, "/native/v2/handshake", "{}"); w.Code != 503 {

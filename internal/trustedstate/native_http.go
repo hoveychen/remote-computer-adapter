@@ -175,14 +175,15 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 				return
 			}
 			var q struct {
-				RequestID    string `json:"request_id"`
-				JobID        string `json:"job_id"`
-				InputVersion string `json:"input_version"`
+				RequestID      string `json:"request_id"`
+				JobID          string `json:"job_id"`
+				InputVersion   string `json:"input_version"`
+				InputWatermark int64  `json:"input_watermark"`
 			}
 			if !decode(&q) {
 				return
 			}
-			setReceipt(s.MemoryStage1Enqueue(q.RequestID, q.JobID, q.InputVersion))
+			setReceipt(s.MemoryStage1Enqueue(q.RequestID, q.JobID, q.InputVersion, q.InputWatermark))
 		case "/native/v2/memory.job.claim":
 			if !requireBackground() {
 				return
@@ -296,6 +297,42 @@ func NativeHTTPHandler(s *Store, credentials []NativeCredential) (http.Handler, 
 				return
 			}
 			result, e = s.NativeRead(q.Domain, q.Key, q.Revision)
+		case "/native/v2/memory.usage.record":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID string   `json:"request_id"`
+				JobIDs    []string `json:"job_ids"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryRecordUsage(q.RequestID, q.JobIDs))
+		case "/native/v2/memory.retention":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID     string `json:"request_id"`
+				MaxUnusedDays int64  `json:"max_unused_days"`
+				Limit         uint32 `json:"limit"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryRetainStage1(q.RequestID, q.MaxUnusedDays, q.Limit))
+		case "/native/v2/memory.clear":
+			if !requireBackground() {
+				return
+			}
+			var q struct {
+				RequestID string `json:"request_id"`
+			}
+			if !decode(&q) {
+				return
+			}
+			setReceipt(s.MemoryClear(q.RequestID))
 		default:
 			http.NotFound(w, r)
 			return

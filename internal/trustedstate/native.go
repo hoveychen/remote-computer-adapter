@@ -56,19 +56,22 @@ type NativeRequest struct {
 	RequestID string            `json:"request_id"`
 	Actor     NativeActor       `json:"actor"`
 	Operation string            `json:"operation"`
+	Intent    string            `json:"intent,omitempty"`
 	Changes   []NativeChange    `json:"changes,omitempty"`
 	Job       *NativeJobCommand `json:"job,omitempty"`
 }
 
 type NativeJobCommand struct {
-	JobID         string `json:"job_id"`
-	Kind          string `json:"kind,omitempty"`
-	LeaseToken    string `json:"lease_token,omitempty"`
-	LeaseSeconds  uint32 `json:"lease_seconds,omitempty"`
-	TransactionID string `json:"transaction_id,omitempty"`
-	InputVersion  string `json:"input_version,omitempty"`
-	Failure       string `json:"failure,omitempty"`
-	MaxInputs     uint32 `json:"max_inputs,omitempty"`
+	JobID          string `json:"job_id"`
+	Kind           string `json:"kind,omitempty"`
+	LeaseToken     string `json:"lease_token,omitempty"`
+	LeaseSeconds   uint32 `json:"lease_seconds,omitempty"`
+	TransactionID  string `json:"transaction_id,omitempty"`
+	InputVersion   string `json:"input_version,omitempty"`
+	InputWatermark int64  `json:"input_watermark,omitempty"`
+	Failure        string `json:"failure,omitempty"`
+	MaxInputs      uint32 `json:"max_inputs,omitempty"`
+	NoOutput       bool   `json:"no_output,omitempty"`
 }
 
 type NativeJob struct {
@@ -77,6 +80,7 @@ type NativeJob struct {
 	Revision          uint64            `json:"revision"`
 	Status            string            `json:"status"`
 	InputVersion      string            `json:"input_version,omitempty"`
+	InputWatermark    int64             `json:"input_watermark,omitempty"`
 	LeaseToken        string            `json:"lease_token,omitempty"`
 	LeaseExpiresAt    string            `json:"lease_expires_at,omitempty"`
 	TransactionID     string            `json:"transaction_id,omitempty"`
@@ -254,18 +258,36 @@ func cloneNativeJob(j NativeJob) NativeJob {
 func (s *Store) stage1Selection(limit uint32) map[string]uint64 {
 	out := map[string]uint64{}
 	type candidate struct {
-		id       string
-		revision uint64
+		id             string
+		usageCount     uint64
+		lastRelevantAt int64
+		inputWatermark int64
 	}
 	var candidates []candidate
 	for id, job := range s.nativeJobs {
 		if job.Kind == "stage1" && job.Status == "succeeded" {
-			candidates = append(candidates, candidate{id: id, revision: job.Revision})
+			raw := s.native[nativeKey("memory.stage1", "raw/"+id+".md")]
+			summary := s.native[nativeKey("memory.stage1", "summary/"+id+".md")]
+			if raw.Revision == 0 || raw.Deleted || summary.Revision == 0 || summary.Deleted {
+				continue
+			}
+			usage := s.memoryUsage(id)
+			lastRelevantAt := usage.LastUsageAt
+			if lastRelevantAt == 0 {
+				lastRelevantAt = job.InputWatermark / 1000
+			}
+			candidates = append(candidates, candidate{id: id, usageCount: usage.Count, lastRelevantAt: lastRelevantAt, inputWatermark: job.InputWatermark})
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].revision != candidates[j].revision {
-			return candidates[i].revision > candidates[j].revision
+		if candidates[i].usageCount != candidates[j].usageCount {
+			return candidates[i].usageCount > candidates[j].usageCount
+		}
+		if candidates[i].lastRelevantAt != candidates[j].lastRelevantAt {
+			return candidates[i].lastRelevantAt > candidates[j].lastRelevantAt
+		}
+		if candidates[i].inputWatermark != candidates[j].inputWatermark {
+			return candidates[i].inputWatermark > candidates[j].inputWatermark
 		}
 		return candidates[i].id > candidates[j].id
 	})
@@ -333,13 +355,14 @@ func (s *Store) evaluateNative(q NativeRequest, now time.Time, replay *NativeRes
 				return reject("job_conflict")
 			}
 			if !exists {
-				job = NativeJob{JobID: cmd.JobID, Kind: "stage1", Revision: 1, Status: "queued", InputVersion: cmd.InputVersion, MemoryGeneration: s.memoryGeneration}
+				job = NativeJob{JobID: cmd.JobID, Kind: "stage1", Revision: 1, Status: "queued", InputVersion: cmd.InputVersion, InputWatermark: cmd.InputWatermark, MemoryGeneration: s.memoryGeneration}
 			} else if old.Kind != "stage1" || old.Status == "leased" {
 				return reject("job_conflict")
 			} else if old.InputVersion != cmd.InputVersion {
 				job.Revision++
 				job.Status = "queued"
 				job.InputVersion = cmd.InputVersion
+				job.InputWatermark = cmd.InputWatermark
 				job.Failure = ""
 				job.MemoryGeneration = s.memoryGeneration
 			}
@@ -390,29 +413,35 @@ func (s *Store) evaluateNative(q NativeRequest, now time.Time, replay *NativeRes
 			job.LeaseToken = ""
 			job.LeaseExpiresAt = ""
 		case "memory.stage1.commit":
-			if !exists || old.Kind != "stage1" || !validLease(old, cmd.LeaseToken, now) || len(q.Changes) != 2 {
+			if !exists || old.Kind != "stage1" || !validLease(old, cmd.LeaseToken, now) {
 				return reject("lease_lost")
+			}
+			if (cmd.NoOutput && len(q.Changes) != 0 && len(q.Changes) != 2) || (!cmd.NoOutput && len(q.Changes) != 2) {
+				return reject("invalid_stage1_artifacts")
 			}
 			seenRaw, seenSummary := false, false
 			for _, c := range q.Changes {
-				seenRaw = seenRaw || (c.Domain == "memory.stage1" && c.Key == "raw/"+cmd.JobID+".md")
-				seenSummary = seenSummary || (c.Domain == "memory.stage1" && c.Key == "summary/"+cmd.JobID+".md")
+				seenRaw = seenRaw || (c.Domain == "memory.stage1" && c.Key == "raw/"+cmd.JobID+".md" && c.Deleted == cmd.NoOutput)
+				seenSummary = seenSummary || (c.Domain == "memory.stage1" && c.Key == "summary/"+cmd.JobID+".md" && c.Deleted == cmd.NoOutput)
 			}
-			if !seenRaw || !seenSummary {
+			if len(q.Changes) == 2 && (!seenRaw || !seenSummary) {
 				return reject("invalid_stage1_artifacts")
 			}
 			job.Revision++
 			job.Status = "succeeded"
 			job.LeaseToken, job.LeaseExpiresAt = "", ""
-			phase2, ok := s.nativeJobs["global"]
-			if !ok {
-				phase2 = NativeJob{JobID: "global", Kind: "phase2", Revision: 1, Status: "queued"}
-			} else if phase2.Status == "succeeded" || phase2.Status == "failed" {
-				phase2.Revision++
-				phase2.Status = "queued"
-				phase2.Failure = ""
+			result.Jobs = append(result.Jobs, job)
+			if len(q.Changes) > 0 {
+				phase2, ok := s.nativeJobs["global"]
+				if !ok {
+					phase2 = NativeJob{JobID: "global", Kind: "phase2", Revision: 1, Status: "queued"}
+				} else if phase2.Status == "succeeded" || phase2.Status == "failed" {
+					phase2.Revision++
+					phase2.Status = "queued"
+					phase2.Failure = ""
+				}
+				result.Jobs = append(result.Jobs, phase2)
 			}
-			result.Jobs = append(result.Jobs, job, phase2)
 		case "memory.phase2.begin":
 			if !exists || old.Kind != "phase2" || cmd.LeaseSeconds == 0 || len(q.Changes) != 0 {
 				return reject("job_conflict")
@@ -546,6 +575,9 @@ func (s *Store) NativeBatch(q NativeRequest) (NativeResult, error) {
 		return NativeResult{}, errors.New("request_id reused across protocols")
 	}
 	if r, ok := s.nativeRequests[q.RequestID]; ok {
+		if q.Intent != "" && q.Operation == r.Request.Operation && q.Intent == r.Request.Intent {
+			return cloneNativeResult(r.Result), nil
+		}
 		if r.RequestDigest != digest {
 			return NativeResult{}, errors.New("request_id reused with different arguments")
 		}

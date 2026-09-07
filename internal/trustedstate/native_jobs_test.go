@@ -44,15 +44,19 @@ func TestNativeStage1CommitAndPhase2ArtifactsAreAtomic(t *testing.T) {
 	}
 	begin := committedJob(t, s, jobRequest("phase2-begin", "memory.phase2.begin", NativeJobCommand{JobID: "global", LeaseSeconds: 60}))
 	phase2 := begin.Jobs[0]
-	finish := committedJob(t, s, jobRequest(
-		"phase2-commit",
-		"memory.phase2.commit",
-		NativeJobCommand{JobID: "global", LeaseToken: phase2.LeaseToken, TransactionID: phase2.TransactionID},
-		NativeChange{Domain: "memory.artifact", Key: "MEMORY.md", Content: []byte("memory")},
-		NativeChange{Domain: "memory.artifact", Key: "memory_summary.md", Content: []byte("v1\nsummary")},
-	))
+	finish, err := s.MemoryPhase2Commit("phase2-commit", phase2.LeaseToken, phase2.TransactionID, "memory", "v1\nsummary")
+	if err != nil || finish.Status != "committed" {
+		t.Fatal(finish, err)
+	}
 	if len(finish.Resources) != 2 || finish.Jobs[0].Status != "succeeded" || finish.MemoryGeneration != 2 {
 		t.Fatalf("phase2 artifacts/job not committed together: %+v", finish)
+	}
+	finishAgain, err := s.MemoryPhase2Commit("phase2-commit", phase2.LeaseToken, phase2.TransactionID, "memory", "v1\nsummary")
+	if err != nil || !reflect.DeepEqual(finish, finishAgain) {
+		t.Fatalf("phase2 retry changed receipt: %+v %+v %v", finish, finishAgain, err)
+	}
+	if _, err = s.MemoryPhase2Commit("phase2-commit", phase2.LeaseToken, phase2.TransactionID, "changed", "v1\nsummary"); err == nil {
+		t.Fatal("phase2 request id accepted changed artifacts")
 	}
 	s.Close()
 	reopened, err := Open(root)
@@ -146,17 +150,32 @@ func TestNativeJobClaimIsConcurrentAndIdempotent(t *testing.T) {
 
 func TestNativeMemoryMaintenanceAndProjectionReplay(t *testing.T) {
 	s, root := openTest(t)
-	batch(t, s, nativeQ("seed",
-		NativeChange{Domain: "memory.stage1", Key: "raw/keep.md", Content: []byte("keep")},
-		NativeChange{Domain: "memory.stage1", Key: "raw/drop.md", Content: []byte("drop")},
-		NativeChange{Domain: "memory.artifact", Key: "MEMORY.md", Content: []byte("memory")}))
-	usage, err := s.MemoryRecordUsage("usage1", "memory.artifact", "MEMORY.md", 1)
+	for _, id := range []string{"keep", "drop"} {
+		committedJob(t, s, jobRequest("enqueue-"+id, "memory.stage1.enqueue", NativeJobCommand{JobID: id, Kind: "stage1", InputVersion: "v1", InputWatermark: 1}))
+		claim := committedJob(t, s, jobRequest("claim-"+id, "memory.job.claim", NativeJobCommand{JobID: id, LeaseSeconds: 60})).Jobs[0]
+		committedJob(t, s, jobRequest("commit-"+id, "memory.stage1.commit", NativeJobCommand{JobID: id, LeaseToken: claim.LeaseToken},
+			NativeChange{Domain: "memory.stage1", Key: "raw/" + id + ".md", Content: []byte("raw " + id)},
+			NativeChange{Domain: "memory.stage1", Key: "summary/" + id + ".md", Content: []byte("summary " + id)}))
+	}
+	batch(t, s, nativeQ("seed-artifact", NativeChange{Domain: "memory.artifact", Key: "MEMORY.md", Content: []byte("memory")}))
+	usage, err := s.MemoryRecordUsage("usage1", []string{"keep"})
 	if err != nil || usage.Status != "committed" {
 		t.Fatal(usage, err)
 	}
-	retained, err := s.MemoryRetainStage1("retain1", map[string]bool{"raw/keep.md": true})
+	usageAgain, err := s.MemoryRecordUsage("usage1", []string{"keep"})
+	if err != nil || !reflect.DeepEqual(usage, usageAgain) {
+		t.Fatalf("usage retry changed receipt: %+v %+v %v", usage, usageAgain, err)
+	}
+	if _, err = s.MemoryRecordUsage("usage1", []string{"drop"}); err == nil {
+		t.Fatal("usage request id accepted different job ids")
+	}
+	retained, err := s.MemoryRetainStage1("retain1", 1, 10)
 	if err != nil || retained.Status != "committed" {
 		t.Fatal(retained, err)
+	}
+	retainedAgain, err := s.MemoryRetainStage1("retain1", 1, 10)
+	if err != nil || !reflect.DeepEqual(retained, retainedAgain) {
+		t.Fatalf("retention retry changed receipt: %+v %+v %v", retained, retainedAgain, err)
 	}
 	if _, err = s.NativeRead("memory.stage1", "raw/drop.md", 0); err != nil {
 		t.Fatal("retention tombstone must remain auditable", err)
@@ -184,6 +203,10 @@ func TestNativeMemoryMaintenanceAndProjectionReplay(t *testing.T) {
 	cleared, err := s.MemoryClear("clear1")
 	if err != nil || cleared.Status != "committed" {
 		t.Fatal(cleared, err)
+	}
+	clearedAgain, err := s.MemoryClear("clear1")
+	if err != nil || !reflect.DeepEqual(cleared, clearedAgain) {
+		t.Fatalf("clear retry changed receipt: %+v %+v %v", cleared, clearedAgain, err)
 	}
 	projection, err := s.MemoryProjection()
 	if err != nil {
@@ -217,11 +240,11 @@ func TestNativeMemoryMaintenanceAndProjectionReplay(t *testing.T) {
 
 func TestNativeStage1InputVersionRefreshesCanonicalOutput(t *testing.T) {
 	s, _ := openTest(t)
-	first, err := s.MemoryStage1Enqueue("enqueue-v1", "rollout", "source-v1")
+	first, err := s.MemoryStage1Enqueue("enqueue-v1", "rollout", "source-v1", 1000)
 	if err != nil || first.Status != "committed" {
 		t.Fatal(first, err)
 	}
-	same, err := s.MemoryStage1Enqueue("enqueue-v1-again", "rollout", "source-v1")
+	same, err := s.MemoryStage1Enqueue("enqueue-v1-again", "rollout", "source-v1", 1000)
 	if err != nil || same.Status != "committed" || same.Jobs[0].Revision != first.Jobs[0].Revision {
 		t.Fatal(same, err)
 	}
@@ -229,10 +252,18 @@ func TestNativeStage1InputVersionRefreshesCanonicalOutput(t *testing.T) {
 	if err != nil || claim.Status != "committed" {
 		t.Fatal(claim, err)
 	}
-	if _, err = s.MemoryStage1Commit("commit-v1", "rollout", claim.Jobs[0].LeaseToken, "old raw", "old summary"); err != nil {
+	committed, err := s.MemoryStage1Commit("commit-v1", "rollout", claim.Jobs[0].LeaseToken, "old raw", "old summary")
+	if err != nil {
 		t.Fatal(err)
 	}
-	refreshed, err := s.MemoryStage1Enqueue("enqueue-v2", "rollout", "source-v2")
+	committedAgain, err := s.MemoryStage1Commit("commit-v1", "rollout", claim.Jobs[0].LeaseToken, "old raw", "old summary")
+	if err != nil || !reflect.DeepEqual(committed, committedAgain) {
+		t.Fatalf("stage1 retry changed receipt: %+v %+v %v", committed, committedAgain, err)
+	}
+	if _, err = s.MemoryStage1Commit("commit-v1", "rollout", claim.Jobs[0].LeaseToken, "changed", "old summary"); err == nil {
+		t.Fatal("stage1 request id accepted changed artifacts")
+	}
+	refreshed, err := s.MemoryStage1Enqueue("enqueue-v2", "rollout", "source-v2", 2000)
 	if err != nil || refreshed.Jobs[0].Status != "queued" {
 		t.Fatal(refreshed, err)
 	}
@@ -246,6 +277,45 @@ func TestNativeStage1InputVersionRefreshesCanonicalOutput(t *testing.T) {
 	raw, err := s.NativeRead("memory.stage1", "raw/rollout.md", 2)
 	if err != nil || string(raw.Content) != "new raw" {
 		t.Fatal(raw, err)
+	}
+}
+
+func TestNativeStage1NoOutputDoesNotCreateEmptyInputs(t *testing.T) {
+	s, _ := openTest(t)
+	first, err := s.MemoryStage1Enqueue("enqueue-empty", "empty", "v1", 1000)
+	if err != nil || first.Status != "committed" {
+		t.Fatal(first, err)
+	}
+	claim := committedJob(t, s, jobRequest("claim-empty", "memory.job.claim", NativeJobCommand{JobID: "empty", LeaseSeconds: 60})).Jobs[0]
+	result, err := s.MemoryStage1Commit("commit-empty", "empty", claim.LeaseToken, "", "")
+	if err != nil || result.Status != "committed" || len(result.Resources) != 0 || len(result.Jobs) != 1 {
+		t.Fatalf("no-output created resources or phase2 job: %+v %v", result, err)
+	}
+	if _, err = s.NativeJobRead("global"); err == nil {
+		t.Fatal("no-output without old artifacts queued phase2")
+	}
+
+	refresh, err := s.MemoryStage1Enqueue("enqueue-output", "empty", "v2", 2000)
+	if err != nil || refresh.Status != "committed" {
+		t.Fatal(refresh, err)
+	}
+	claim = committedJob(t, s, jobRequest("claim-output", "memory.job.claim", NativeJobCommand{JobID: "empty", LeaseSeconds: 60})).Jobs[0]
+	if _, err = s.MemoryStage1Commit("commit-output", "empty", claim.LeaseToken, "raw", "summary"); err != nil {
+		t.Fatal(err)
+	}
+	refresh, err = s.MemoryStage1Enqueue("enqueue-empty-again", "empty", "v3", 3000)
+	if err != nil || refresh.Status != "committed" {
+		t.Fatal(refresh, err)
+	}
+	claim = committedJob(t, s, jobRequest("claim-empty-again", "memory.job.claim", NativeJobCommand{JobID: "empty", LeaseSeconds: 60})).Jobs[0]
+	result, err = s.MemoryStage1Commit("commit-empty-again", "empty", claim.LeaseToken, "", "")
+	if err != nil || result.Status != "committed" || len(result.Resources) != 2 || len(result.Jobs) != 2 {
+		t.Fatalf("no-output did not atomically delete old pair and queue phase2: %+v %v", result, err)
+	}
+	for _, resource := range result.Resources {
+		if !resource.Deleted {
+			t.Fatalf("no-output retained a live stage1 artifact: %+v", resource)
+		}
 	}
 }
 
