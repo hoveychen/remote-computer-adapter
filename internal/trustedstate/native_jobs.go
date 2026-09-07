@@ -38,9 +38,11 @@ func (s *Store) MemoryJobFail(requestID, jobID, leaseToken, reason string) (Nati
 }
 
 func (s *Store) MemoryStage1Commit(requestID, jobID, leaseToken, rawMemory, rolloutSummary string) (NativeResult, error) {
+	rawRevision := s.nativeRevision("memory.stage1", "raw/"+jobID+".md")
+	summaryRevision := s.nativeRevision("memory.stage1", "summary/"+jobID+".md")
 	return s.NativeBatch(backgroundRequest(requestID, "memory.stage1.commit", NativeJobCommand{JobID: jobID, LeaseToken: leaseToken},
-		NativeChange{Domain: "memory.stage1", Key: "raw/" + jobID + ".md", Content: []byte(rawMemory)},
-		NativeChange{Domain: "memory.stage1", Key: "summary/" + jobID + ".md", Content: []byte(rolloutSummary)}))
+		NativeChange{Domain: "memory.stage1", Key: "raw/" + jobID + ".md", ExpectedRevision: rawRevision, Content: []byte(rawMemory)},
+		NativeChange{Domain: "memory.stage1", Key: "summary/" + jobID + ".md", ExpectedRevision: summaryRevision, Content: []byte(rolloutSummary)}))
 }
 
 func (s *Store) MemoryPhase2Begin(requestID string, leaseSeconds uint32) (NativeResult, error) {

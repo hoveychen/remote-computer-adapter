@@ -194,3 +194,37 @@ func TestNativeMemoryMaintenanceAndProjectionReplay(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeStage1InputVersionRefreshesCanonicalOutput(t *testing.T) {
+	s, _ := openTest(t)
+	first, err := s.MemoryStage1Enqueue("enqueue-v1", "rollout", "source-v1")
+	if err != nil || first.Status != "committed" {
+		t.Fatal(first, err)
+	}
+	same, err := s.MemoryStage1Enqueue("enqueue-v1-again", "rollout", "source-v1")
+	if err != nil || same.Status != "committed" || same.Jobs[0].Revision != first.Jobs[0].Revision {
+		t.Fatal(same, err)
+	}
+	claim, err := s.MemoryJobClaim("claim-v1", "rollout", 60)
+	if err != nil || claim.Status != "committed" {
+		t.Fatal(claim, err)
+	}
+	if _, err = s.MemoryStage1Commit("commit-v1", "rollout", claim.Jobs[0].LeaseToken, "old raw", "old summary"); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := s.MemoryStage1Enqueue("enqueue-v2", "rollout", "source-v2")
+	if err != nil || refreshed.Jobs[0].Status != "queued" {
+		t.Fatal(refreshed, err)
+	}
+	claim, err = s.MemoryJobClaim("claim-v2", "rollout", 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.MemoryStage1Commit("commit-v2", "rollout", claim.Jobs[0].LeaseToken, "new raw", "new summary"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.NativeRead("memory.stage1", "raw/rollout.md", 2)
+	if err != nil || string(raw.Content) != "new raw" {
+		t.Fatal(raw, err)
+	}
+}

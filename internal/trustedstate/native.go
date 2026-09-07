@@ -305,10 +305,20 @@ func (s *Store) evaluateNative(q NativeRequest, now time.Time, replay *NativeRes
 		}
 		switch q.Operation {
 		case "memory.stage1.enqueue":
-			if exists || cmd.Kind != "stage1" || cmd.InputVersion == "" || len(q.Changes) != 0 {
+			if cmd.Kind != "stage1" || cmd.InputVersion == "" || len(q.Changes) != 0 {
 				return reject("job_conflict")
 			}
-			job = NativeJob{JobID: cmd.JobID, Kind: "stage1", Revision: 1, Status: "queued", InputVersion: cmd.InputVersion, MemoryGeneration: s.memoryGeneration}
+			if !exists {
+				job = NativeJob{JobID: cmd.JobID, Kind: "stage1", Revision: 1, Status: "queued", InputVersion: cmd.InputVersion, MemoryGeneration: s.memoryGeneration}
+			} else if old.Kind != "stage1" || old.Status == "leased" {
+				return reject("job_conflict")
+			} else if old.InputVersion != cmd.InputVersion {
+				job.Revision++
+				job.Status = "queued"
+				job.InputVersion = cmd.InputVersion
+				job.Failure = ""
+				job.MemoryGeneration = s.memoryGeneration
+			}
 		case "memory.job.claim":
 			if !exists || cmd.LeaseSeconds == 0 || len(q.Changes) != 0 || (cmd.Kind != "" && cmd.Kind != old.Kind) {
 				return reject("job_conflict")
