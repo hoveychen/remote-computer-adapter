@@ -293,12 +293,15 @@ func TestNativeFullSizedPackage(t *testing.T) {
 	s, root := openTest(t)
 	c := skill(0)
 	c.Package.Files = nil
+	skillHeader := []byte("---\nname: demo\ndescription: Full-sized package boundary test.\n---\n")
 	for i := 0; i < 16; i++ {
 		p := fmt.Sprintf("assets/%d", i)
+		content := bytes.Repeat([]byte("x"), NativeResourceBytes)
 		if i == 0 {
 			p = "SKILL.md"
+			content = append(skillHeader, bytes.Repeat([]byte("x"), NativeResourceBytes-len(skillHeader))...)
 		}
-		c.Package.Files = append(c.Package.Files, NativeFile{Path: p, Content: bytes.Repeat([]byte("x"), NativeResourceBytes)})
+		c.Package.Files = append(c.Package.Files, NativeFile{Path: p, Content: content})
 	}
 	r := batch(t, s, nativeQ("full-package", c))
 	if r.Error != "" {

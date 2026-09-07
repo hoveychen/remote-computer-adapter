@@ -42,6 +42,9 @@ func TestSkillPackageLifecycleBindsAuthorityAndSnapshot(t *testing.T) {
 	if _, err = s.SkillPackageRead("executor", "demo", 1, "SKILL.md"); err == nil || err.Error() != "authority_mismatch" {
 		t.Fatal("authority escalation was accepted", err)
 	}
+	if _, err = s.SkillPackageReplace("skill-takeover", "executor", "demo", 1, true, files); err == nil || err.Error() != "authority_mismatch" {
+		t.Fatal("authority takeover was accepted", err)
+	}
 	files[1].Content = []byte("v2")
 	upgraded, err := s.SkillPackageReplace("skill-upgrade", "host", "demo", 1, true, files)
 	if err != nil || upgraded.Error != "" || upgraded.Resources[0].Revision != 2 {
@@ -124,7 +127,8 @@ func TestNativeSkillsHTTPIsInstallerOnlyAndAuthorityBound(t *testing.T) {
 		t.Fatal(handshake)
 	}
 	files := skillFiles("---\nname: demo\ndescription: Demo.\n---\nBody\n")
-	payload := map[string]any{"request_id": "http-install", "package_id": "demo", "expected_revision": 0, "enabled": true, "files": files}
+	writableFiles := []map[string]any{{"path": files[0].Path, "content_base64": files[0].Content}}
+	payload := map[string]any{"request_id": "http-install", "package_id": "demo", "expected_revision": 0, "enabled": true, "files": writableFiles}
 	if response := request(modelToken, "skills.package.replace", payload); response.Code != 403 {
 		t.Fatal("model credential installed package", response)
 	}

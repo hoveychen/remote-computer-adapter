@@ -94,8 +94,21 @@ func validateSkillPackage(packageID string, p *NativePackage) error {
 }
 
 func (s *Store) SkillPackageReplace(requestID, authority, packageID string, expectedRevision uint64, enabled bool, files []NativeFile) (NativeResult, error) {
+	intent := nativeIntent([]any{authority, packageID, expectedRevision, enabled, files})
+	if result, found, err := s.skillRequestReplay(requestID, "skills.package.replace", intent); found || err != nil {
+		return result, err
+	}
+	if expectedRevision != 0 {
+		current, err := s.NativeRead("skills.package", packageID, expectedRevision)
+		if err != nil {
+			return NativeResult{}, err
+		}
+		if current.Deleted || current.Package == nil || current.Package.Authority != authority {
+			return NativeResult{}, errors.New("authority_mismatch")
+		}
+	}
 	change := NativeChange{Domain: "skills.package", Key: packageID, ExpectedRevision: expectedRevision, Package: &NativePackage{Authority: authority, Enabled: enabled, Files: files}}
-	return s.NativeBatch(NativeRequest{RequestID: requestID, Actor: NativeActor{Kind: "installer", ThreadID: authority}, Operation: "skills.package.replace", Intent: nativeIntent([]any{authority, packageID, expectedRevision, enabled, files}), Changes: []NativeChange{change}})
+	return s.NativeBatch(NativeRequest{RequestID: requestID, Actor: NativeActor{Kind: "installer", ThreadID: authority}, Operation: "skills.package.replace", Intent: intent, Changes: []NativeChange{change}})
 }
 
 func (s *Store) SkillPackageSetEnabled(requestID, authority, packageID string, expectedRevision uint64, enabled bool) (NativeResult, error) {
