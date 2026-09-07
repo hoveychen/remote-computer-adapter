@@ -171,7 +171,7 @@ def main():
                 rid = 'resp_' + str(n)
                 if n <= len(code):
                     item = {'type': 'custom_tool_call', 'call_id': 'call_' + str(n),
-                            'namespace': 'functions', 'name': 'exec', 'input': code[n - 1]}
+                            'name': 'exec', 'input': code[n - 1]}
                 else:
                     item = {'type': 'message', 'id': 'msg_done', 'role': 'assistant',
                             'content': [{'type': 'output_text', 'text': 'E2E_DONE'}]}
@@ -199,6 +199,10 @@ def main():
         (p / 'stderr.txt').write_text(err)
         (p / 'requests.json').write_text(json.dumps(requests, indent=2))
         check('codex_completed', proc.returncode == 0 and 'E2E_DONE' in out and len(requests) == len(code) + 1)
+        advertised_custom_tools = [tool['name'] for item in requests[0].get('input', [])
+                                   if item.get('type') == 'additional_tools'
+                                   for tool in item.get('tools', []) if tool.get('type') == 'custom']
+        check('custom_tool_name_matches_advertisement', advertised_custom_tools == ['exec'])
         # Assert actual tool outputs, not the scripted assistant's final claim.
         outputs = {}
         for req in requests:
