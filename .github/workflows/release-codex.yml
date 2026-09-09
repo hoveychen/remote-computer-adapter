@@ -54,9 +54,25 @@ jobs:
         if: matrix.runner == 'ubuntu-latest'
         working-directory: codex/codex-rs
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
           rustup target add x86_64-unknown-linux-musl
           rustup target list --installed
+      # Codex's Linux package statically links bubblewrap against musl, which
+      # needs a musl sysroot carrying libcap and a pkg-config that knows about
+      # it. Codex solves this for its own CI, so use their script rather than
+      # reinventing a cross-compilation environment here.
+      - name: Install Zig
+        if: matrix.runner == 'ubuntu-latest'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+      - name: Install the musl build tools
+        if: matrix.runner == 'ubuntu-latest'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          TARGET: x86_64-unknown-linux-musl
+          APT_UPDATE_ARGS: -o Acquire::Retries=3
+          APT_INSTALL_ARGS: --no-install-recommends
+        run: bash "$GITHUB_WORKSPACE/codex/.github/scripts/install-musl-build-tools.sh"
       - uses: extractions/setup-just@v3
       - name: Build the package
         run: rca/scripts/build-codex-package.sh --codex "$GITHUB_WORKSPACE/codex" --out "$GITHUB_WORKSPACE/dist"
