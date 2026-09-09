@@ -14,9 +14,13 @@ on:
         required: true
         default: hoveychen/codex
       codex_ref:
+        # That fork's own main only mirrors upstream, so it carries none of
+        # the patches; the branch below is the one that does. Defaulting to
+        # main sent the build off to a tree 3000 commits behind the baseline,
+        # which the build script rejected as "does not contain baseline".
         description: Ref in that repository to build
         required: true
-        default: main
+        default: rca/native-state
 
 permissions:
   contents: write
