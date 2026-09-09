@@ -153,6 +153,29 @@ rca claude-native --config ~/.config/rca/claude.json -- "fix the failing test"
 are refused for the same reason: each would reopen something the trusted side
 is supposed to own.
 
+#### Authentication
+
+`ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is used when set, and nothing
+else happens.
+
+Otherwise rca uses your subscription login, which costs one thing worth
+knowing. Setting `CLAUDE_CONFIG_DIR` is what makes containment possible, and it
+is also what stops Claude Code reading the macOS keychain: with the variable set
+it reads only `$CLAUDE_CONFIG_DIR/.credentials.json`. Seeding `oauthAccount`,
+`userID` or the whole `.claude.json` does not substitute, and neither does
+pointing the variable back at the real `~/.claude`. So rca copies the keychain
+credential into the runtime home as a `0600` file inside the `0700` directory it
+holds an exclusive lock on, and deletes it when the session ends. **It is on
+disk for the life of the session**; a `SIGKILL` or a power cut leaves it there.
+If you already keep a `.credentials.json` in that directory, rca uses it and
+leaves it alone.
+
+`runtime_home` may not be, or contain, your real `~/.claude`. Claude Code looks
+for `.claude.json` *inside* its config root, while the real one sits beside the
+directory at `~/.claude.json`; pointing it at the real directory makes it
+initialise a fresh config over the top of yours. rca refuses that config rather
+than let it happen.
+
 ## How it works
 
 ### Codex — the native path
