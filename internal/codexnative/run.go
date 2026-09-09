@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,75 +14,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hoveychen/remote-computer-adapter/internal/runtimehome"
 	"github.com/hoveychen/remote-computer-adapter/internal/trustedstate"
-	"golang.org/x/sys/unix"
 )
 
 const marker = "RCA codex-native prototype v1\n"
 
 func prepare(c Config) (*os.File, error) {
-	if e := os.MkdirAll(c.RuntimeHome, 0700); e != nil {
-		return nil, e
-	}
-	info, e := os.Lstat(c.RuntimeHome)
-	if e != nil {
-		return nil, e
-	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("runtime_home must be a private directory (0700)")
-	}
-	entries, e := os.ReadDir(c.RuntimeHome)
-	if e != nil {
-		return nil, e
-	}
-	b, e := os.ReadFile(filepath.Join(c.RuntimeHome, ".rca-native"))
-	if len(entries) > 0 && (e != nil || string(b) != marker) {
-		return nil, errors.New("refusing unmanaged nonempty runtime_home; choose a new directory")
-	}
-	fd, e := unix.Open(filepath.Join(c.RuntimeHome, ".lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
-	if e != nil {
-		return nil, e
-	}
-	lock := os.NewFile(uintptr(fd), "native runtime lock")
-	if e = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); e != nil {
-		lock.Close()
-		return nil, errors.New("runtime_home is already in use")
-	}
-	if e = atomicWrite(c.RuntimeHome, ".rca-native", marker); e != nil {
-		lock.Close()
-		return nil, e
-	}
-	for _, dir := range []string{"user-home", "work"} {
-		path := filepath.Join(c.RuntimeHome, dir)
-		if e = os.MkdirAll(path, 0700); e != nil {
-			lock.Close()
-			return nil, e
-		}
-		info, e := os.Lstat(path)
-		if e != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-			lock.Close()
-			return nil, fmt.Errorf("runtime %s must be a private directory", dir)
-		}
-	}
-	return lock, nil
+	return runtimehome.Prepare(c.RuntimeHome, marker, "user-home", "work")
 }
+
 func atomicWrite(dir, name, data string) error {
-	f, e := os.CreateTemp(dir, ".config-*")
-	if e != nil {
-		return e
-	}
-	defer os.Remove(f.Name())
-	if _, e = f.WriteString(data); e == nil {
-		e = f.Sync()
-	}
-	closeErr := f.Close()
-	if e != nil {
-		return e
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return os.Rename(f.Name(), filepath.Join(dir, name))
+	return runtimehome.AtomicWrite(dir, name, data)
 }
 func harnessEnv(c Config, token string) []string {
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(c.RuntimeHome, "user-home"), "CODEX_HOME=" + c.RuntimeHome, "RCA_STATE_TOKEN=" + token}
