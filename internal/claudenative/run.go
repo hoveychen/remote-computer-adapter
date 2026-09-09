@@ -80,8 +80,14 @@ func Run(c Config, args []string) error {
 	if err := remote.Call(&executor.Request{Op: executor.OpVersion}, &probe); err != nil {
 		return fmt.Errorf("remote executor handshake: %w", err)
 	}
+	// The executor reports the root it resolved, and this side cannot resolve a
+	// path that exists on another host — so the comparison is exact and the
+	// config must carry the resolved form. A symlinked path (macOS /tmp is
+	// /private/tmp) is the common way to trip this; naming the value to use
+	// beats leaving the operator to guess which of the two is wrong.
 	if probe.Root != c.RemoteRoot {
-		return fmt.Errorf("remote executor is serving %q, not the configured %q", probe.Root, c.RemoteRoot)
+		return fmt.Errorf("remote executor is serving %q, but remote_root is %q; "+
+			"set remote_root to the path the executor reports", probe.Root, c.RemoteRoot)
 	}
 
 	mux := http.NewServeMux()
