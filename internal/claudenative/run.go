@@ -125,6 +125,7 @@ func Run(c Config, args []string) error {
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	defer reportAudit(c.RuntimeHome, os.Stderr)
 
 	select {
 	case err := <-done:
