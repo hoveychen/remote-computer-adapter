@@ -1,5 +1,11 @@
 # remote-adapter 方案纪要
 
+> **已被取代的历史文档。** 本文记录的 syscall 拦截产品（DYLD interpose / seccomp
+> + libp2p 传输 + `rca serve`）已于 2026-09-09 整体删除，代码不再存在于本仓库。
+> 当前产品是 native-only 的可信 harness，见 README 与
+> [`tool-boundary-implementation.md`](tool-boundary-implementation.md)。
+> 保留本文是为了记录当时的取舍与 POC 证据，不描述现有实现。
+
 > 目标：让通过 `remote-adapter` 启动的 `claude` 进程，其**工具调用的实际执行环境**（文件系统 I/O、子进程执行）落在另一台机器的 sandbox sidecar 里，而 Claude 本体（推理循环、工具 schema、transcript）与官方原生行为保持 100% 一致，模型不可感知这层分离。
 >
 > 状态（2026-07-08 POC 更新）：**v3 原始机制（`node --require io-shim.js cli.js`）已被 POC 证伪**——当前 claude 发行版是 Bun 编译的独立二进制，没有可注入的 Node `cli.js`。经老板拍板，POC 转向 **v3b：OS 系统调用层拦截**，并已在 **macOS（DYLD interpose）与 Linux（seccomp-user-notify）双平台实测跑通**：四个风险点全验 + 真实 Claude Code 端到端闭环（Read 读远端-only 文件、Bash 远端执行）。详见 §4（实测结论）与 §4.2（v3b 架构）。本文档是设计+POC 的落地记录，不是最终实现文档。

@@ -1,21 +1,7 @@
 # Build output
 /bin/
-*.o
-*.so
-*.dylib
-*.exe
-
-# Native build artifacts
-native/macos/*.dylib
-native/linux/*.so
-native/**/build/
-
-# Staged-for-embedding native artifacts (copied in by `make native`)
-/cmd/rca/embedded/*
-!/cmd/rca/embedded/README.md
-
-# Local claude copy the adapter re-signs for injection (never commit)
-/.rcc-claude-copy/
+/dist/
+/rca
 
 # Runtime sockets / logs
 *.sock
@@ -30,8 +16,3 @@ TASKS.md
 
 # Go
 /vendor/
-dist/
-native/linux/rcc_seccomp
-
-# Stray root build artifact
-/rca

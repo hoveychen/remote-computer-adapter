@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hoveychen/remote-adapter/internal/trustedstate"
+	"github.com/hoveychen/remote-computer-adapter/internal/trustedstate"
 	"golang.org/x/sys/unix"
 )
 
