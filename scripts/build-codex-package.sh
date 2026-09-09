@@ -99,7 +99,16 @@ cat > "$PKG/rca-codex-manifest.json" <<EOF
 }
 EOF
 
-TARBALL="$OUT/codex-native_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz"
+# Name the archive the way rca codex-install looks for it, which is Go's
+# GOOS_GOARCH — uname says x86_64 where Go says amd64, and an archive named
+# after uname is one the installer's download path can never find.
+case "$(uname -m)" in
+  x86_64|amd64)  ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) die "unsupported architecture $(uname -m)" ;;
+esac
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+TARBALL="$OUT/codex-native_${OS}_${ARCH}.tar.gz"
 # COPYFILE_DISABLE keeps macOS tar from emitting an AppleDouble "._name"
 # sidecar beside every entry; they are noise in a package meant to be
 # extracted anywhere.
