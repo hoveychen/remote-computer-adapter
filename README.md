@@ -82,13 +82,79 @@ sudo install -m 755 rca /usr/local/bin/rca
 rca version
 ```
 
-`checksums.txt` on each release carries the sha256 of every archive.
+Or the one-liner, which does the same checks:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hoveychen/remote-computer-adapter/main/scripts/install.sh | sh
+```
+
+`checksums.txt` on each release carries the sha256 of every archive. Later,
+`rca self-update` replaces the binary in place.
 
 Or build from source (Go 1.25+):
 
 ```sh
 make            # rca into ./bin
 ```
+
+## Deployment
+
+Three things get installed, on two machines.
+
+### The executor, on the sandbox host
+
+```sh
+rca deploy sandbox-host --verify-root /work/project
+```
+
+It reads the remote's platform rather than assuming yours, verifies the
+download against the published checksum, stages and moves rather than
+overwriting a binary that may be running, and then proves the result answers —
+a copy that lands but cannot run is invisible from the sending side. With
+`--verify-root` it also completes the executor handshake and prints the
+resolved root, which is the value `remote_root` has to carry.
+
+Re-running it is how you upgrade. `--binary <path>` pushes a local build
+instead of downloading one.
+
+Codex sessions do not need this: their executor is `codex exec-server`, which
+comes with Codex on the remote host.
+
+### The patched Codex, on your machine
+
+`codex-native` needs a Codex carrying the native-state patches. Stock Codex
+fails the handshake closed, which is the intended behaviour — an unpatched
+binary would write memory and skills to `$CODEX_HOME` with no audit.
+
+```sh
+rca codex-install                       # the published build for this platform
+rca codex-install --from ./dist/codex-native   # a build you made yourself
+```
+
+Builds are kept under `~/.local/share/rca/codex/<commit>` with `current`
+pointing at the active one, so rolling back is repointing a symlink rather than
+rebuilding. Point `binary` in your codex-native config at
+`~/.local/share/rca/codex/current/bin/codex`.
+
+To build one yourself, from a checkout carrying the patches:
+
+```sh
+scripts/build-codex-package.sh --codex ~/workspace/codex
+```
+
+It refuses a checkout that does not contain the baseline pinned in
+`codex-patches/BASELINE`, and refuses a dirty tree — both would make the
+manifest describe something other than what was built. The package carries the
+upstream `LICENSE` and `NOTICE` plus a generated `CHANGES.md`, which is what
+Apache-2.0 asks of a modified redistribution.
+
+Moving to a newer upstream means rebasing the patches and editing
+`codex-patches/BASELINE`, then running the `Release patched Codex` workflow to
+attach fresh packages to a release.
+
+### Claude, on your machine
+
+Nothing to install: `claude-native` runs whatever `claude` you already have.
 
 ## Usage
 
@@ -305,6 +371,8 @@ make test                 # go test ./...
 scripts/test-codex-native.py --help    # codex isolation e2e (needs Docker + a patched codex)
 scripts/test-claude-toolface.py        # what claude really advertises to the model
 scripts/test-claude-native.py          # claude isolation e2e (needs a claude binary)
+scripts/build-codex-package.sh --codex <path>   # build the patched Codex package
+scripts/install.sh                     # the one-line installer
 scripts/build-release.sh  # all four release archives into ./dist
 ```
 
