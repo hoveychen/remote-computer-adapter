@@ -31,6 +31,8 @@ func dispatch(args []string) int {
 	switch args[0] {
 	case "codex-native":
 		return cmdCodexNative(args[1:])
+	case "claude-native":
+		return cmdClaudeNative(args[1:])
 	case "_native-transport":
 		return cmdNativeTransport(args[1:])
 	case "serve":
@@ -57,6 +59,11 @@ Usage:
                           config, general file/exec tools reach only the remote
                           executor, and memory/skills commit to the trusted
                           state service with CAS + audit
+  rca claude-native --config <file> -- "<prompt>"
+                          run Claude Code as a trusted harness. Claude Code has
+                          no state-backend seam, so its built-in tools are
+                          removed outright and replaced by rca's own; the model
+                          sees mcp__rca__ tool names
   rca serve --root <dir>  remote side: the untrusted executor, speaking the
                           executor protocol on stdio and confined to <dir>.
                           Run it through a transport, e.g.
