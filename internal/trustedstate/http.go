@@ -11,7 +11,7 @@ import (
 // HTTPHandler implements stateless Streamable HTTP MCP. The owner must bind
 // loopback; a fresh bearer token is held by the trusted harness, never executor.
 // No cookies, CORS, sessions, GET event streams, or server-initiated calls.
-func HTTPHandler(s *Store, token string) http.Handler {
+func HTTPHandler(s ToolSet, token string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if token == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

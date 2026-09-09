@@ -14,7 +14,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hoveychen/remote-computer-adapter/internal/executor"
 	"github.com/hoveychen/remote-computer-adapter/internal/runtimehome"
+	"github.com/hoveychen/remote-computer-adapter/internal/toolgateway"
 	"github.com/hoveychen/remote-computer-adapter/internal/trustedstate"
 )
 
@@ -63,8 +65,27 @@ func Run(c Config, args []string) error {
 	}
 	defer listener.Close()
 
+	// Dial before the harness starts. A transport that only fails once the
+	// model has already asked for a file would look to it like an empty
+	// workspace rather than a broken session.
+	remote, err := executor.Dial(c.ExecProgram, c.ExecArgs, os.Stderr)
+	if err != nil {
+		return fmt.Errorf("remote executor: %w", err)
+	}
+	defer remote.Close()
+	var probe struct {
+		Protocol int    `json:"protocol"`
+		Root     string `json:"root"`
+	}
+	if err := remote.Call(&executor.Request{Op: executor.OpVersion}, &probe); err != nil {
+		return fmt.Errorf("remote executor handshake: %w", err)
+	}
+	if probe.Root != c.RemoteRoot {
+		return fmt.Errorf("remote executor is serving %q, not the configured %q", probe.Root, c.RemoteRoot)
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", trustedstate.HTTPHandler(state, stateToken))
+	mux.Handle("/mcp", trustedstate.HTTPHandler(toolgateway.New(state, remote), stateToken))
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -85,7 +106,7 @@ func Run(c Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(c.Binary, harnessArgs(c, config, ToolNames())...)
+	cmd := exec.Command(c.Binary, harnessArgs(c, config, toolgateway.ToolNames())...)
 	cmd.Dir = c.RuntimeHome
 	cmd.Env = harnessEnv(c, stateToken)
 	// The prompt goes on stdin: --tools is variadic, so a trailing positional
@@ -124,17 +145,4 @@ func Run(c Config, args []string) error {
 		}
 		return fmt.Errorf("trusted state server stopped: %w", err)
 	}
-}
-
-// ToolNames lists every tool the harness is allowed to call. It is passed to
-// --allowedTools, so a tool the gateway serves but this list omits is
-// advertised and then refused at call time.
-func ToolNames() []string {
-	names := []string{}
-	for _, collection := range []string{"memory", "skills"} {
-		for _, op := range []string{"list", "read", "put", "delete"} {
-			names = append(names, "mcp__rca__"+collection+"_"+op)
-		}
-	}
-	return names
 }

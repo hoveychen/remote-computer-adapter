@@ -46,6 +46,27 @@ func schemas() []any {
 	}
 	return out
 }
+
+// ToolSet is what the MCP plumbing below serves. The Claude harness needs the
+// same transport with a wider tool set — state tools plus remote file and exec
+// tools — and a second JSON-RPC implementation is a second place for the
+// argument validation to drift.
+type ToolSet interface {
+	// Tools returns MCP tool descriptors.
+	Tools() []any
+	// Call runs one tool. A returned error becomes an isError result, so a
+	// refusal reaches the model as a tool failure rather than a transport one.
+	Call(name string, args json.RawMessage) (any, error)
+}
+
+// Tools implements ToolSet.
+func (s *Store) Tools() []any { return schemas() }
+
+// Call implements ToolSet.
+func (s *Store) Call(name string, args json.RawMessage) (any, error) {
+	return s.call(name, args)
+}
+
 func (s *Store) call(name string, args json.RawMessage) (any, error) {
 	parts := strings.Split(name, "_")
 	if len(parts) != 2 {
@@ -105,11 +126,11 @@ func (s *Store) call(name string, args json.RawMessage) (any, error) {
 
 // Serve implements newline-delimited MCP stdio. No paths, resources, shell,
 // sampling, or model-accessible audit mutation endpoints are exposed.
-func Serve(in io.Reader, out io.Writer, s *Store) error {
+func Serve(in io.Reader, out io.Writer, s ToolSet) error {
 	return serve(in, out, s, false)
 }
 
-func serve(in io.Reader, out io.Writer, s *Store, initialized bool) error {
+func serve(in io.Reader, out io.Writer, s ToolSet, initialized bool) error {
 	scan := bufio.NewScanner(in)
 	scan.Buffer(make([]byte, 4096), 8*MaxContent)
 	enc := json.NewEncoder(out)
@@ -157,7 +178,7 @@ func serve(in io.Reader, out io.Writer, s *Store, initialized bool) error {
 				if !initialized {
 					rpcErr(-32600, "initialize first")
 				} else {
-					reply["result"] = map[string]any{"tools": schemas()}
+					reply["result"] = map[string]any{"tools": s.Tools()}
 				}
 			case "tools/call":
 				if !initialized {
@@ -173,7 +194,7 @@ func serve(in io.Reader, out io.Writer, s *Store, initialized bool) error {
 					rpcErr(-32602, "invalid tool params")
 					break
 				}
-				result, err := s.call(p.Name, p.Arguments)
+				result, err := s.Call(p.Name, p.Arguments)
 				var payload []byte
 				if err != nil {
 					payload, _ = json.Marshal(map[string]any{"error": err.Error(), "result": result})

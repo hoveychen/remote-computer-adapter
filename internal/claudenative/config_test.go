@@ -173,15 +173,3 @@ func TestMCPConfigCarriesTheBearerToken(t *testing.T) {
 		t.Errorf("authorization = %q", server.Headers["Authorization"])
 	}
 }
-
-func TestToolNamesAreNamespaced(t *testing.T) {
-	names := ToolNames()
-	if len(names) == 0 {
-		t.Fatal("no tools listed")
-	}
-	for _, name := range names {
-		if !strings.HasPrefix(name, "mcp__rca__") {
-			t.Errorf("%q is not an rca MCP tool", name)
-		}
-	}
-}
