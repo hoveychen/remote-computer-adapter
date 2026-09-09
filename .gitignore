@@ -16,3 +16,7 @@ TASKS.md
 
 # Go
 /vendor/
+
+# Python bytecode from the test scripts
+__pycache__/
+*.pyc
