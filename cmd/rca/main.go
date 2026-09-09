@@ -37,6 +37,8 @@ func dispatch(args []string) int {
 		return cmdNativeTransport(args[1:])
 	case "serve":
 		return cmdServe(args[1:])
+	case "deploy":
+		return cmdDeploy(args[1:])
 	case "_state-mcp":
 		return cmdStateMCP(args[1:])
 	case "help", "-h", "--help":
@@ -68,6 +70,11 @@ Usage:
                           executor protocol on stdio and confined to <dir>.
                           Run it through a transport, e.g.
                           ssh sandbox-host rca serve --root /work/project
+  rca deploy <ssh-target> install or upgrade rca on the remote executor host:
+                          detects its platform, verifies the download against
+                          the published checksum, and proves the installed
+                          binary answers. --verify-root <dir> also runs the
+                          executor handshake and reports the resolved root
   rca version             print version
 
 The config file is JSON with absolute paths:
