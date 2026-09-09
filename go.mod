@@ -1,4 +1,4 @@
-module github.com/hoveychen/remote-adapter
+module github.com/hoveychen/remote-computer-adapter
 
 go 1.25.7
 

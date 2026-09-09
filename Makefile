@@ -1,4 +1,4 @@
-# remote-adapter — top-level build.
+# remote-computer-adapter — top-level build.
 #
 # One pure-Go binary: rca. No native artifacts, no cgo, no embedding step.
 

@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/hoveychen/remote-adapter/internal/trustedstate"
+	"github.com/hoveychen/remote-computer-adapter/internal/trustedstate"
 	"os"
 )
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hoveychen/remote-adapter/internal/trustedstate"
+	"github.com/hoveychen/remote-computer-adapter/internal/trustedstate"
 )
 
 func TestNativeServiceBindsActualThreadAndReplaysReceipt(t *testing.T) {

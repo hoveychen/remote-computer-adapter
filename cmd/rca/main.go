@@ -1,4 +1,4 @@
-// Command rca is the single-binary CLI for remote-adapter. One executable
+// Command rca is the single-binary CLI for remote-computer-adapter. One executable
 // carries every role; the first argument picks it:
 //
 //	rca codex-native --config <file> -- exec ...

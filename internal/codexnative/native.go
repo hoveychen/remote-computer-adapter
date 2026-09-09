@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/hoveychen/remote-adapter/internal/trustedstate"
+	"github.com/hoveychen/remote-computer-adapter/internal/trustedstate"
 )
 
 // nativeService binds writes only after app-server supplies its actual thread ID.

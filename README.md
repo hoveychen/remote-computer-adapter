@@ -1,4 +1,4 @@
-# remote-adapter (`rca`)
+# remote-computer-adapter (`rca`)
 
 A **trusted harness** for coding agents. The agent's conversation, credentials,
 memory and skills stay on a machine you control; every general file and
@@ -50,17 +50,17 @@ a cleared environment, so harness credentials never reach the remote side.
 ## Install
 
 Grab the single binary from
-[Releases](https://github.com/hoveychen/remote-adapter/releases):
+[Releases](https://github.com/hoveychen/remote-computer-adapter/releases):
 
 ```sh
 # macOS (Apple silicon)
-curl -fsSL https://github.com/hoveychen/remote-adapter/releases/latest/download/rca_darwin_arm64.tar.gz | tar xz
+curl -fsSL https://github.com/hoveychen/remote-computer-adapter/releases/latest/download/rca_darwin_arm64.tar.gz | tar xz
 # macOS (Intel)
-curl -fsSL https://github.com/hoveychen/remote-adapter/releases/latest/download/rca_darwin_amd64.tar.gz | tar xz
+curl -fsSL https://github.com/hoveychen/remote-computer-adapter/releases/latest/download/rca_darwin_amd64.tar.gz | tar xz
 # Linux (x86_64)
-curl -fsSL https://github.com/hoveychen/remote-adapter/releases/latest/download/rca_linux_amd64.tar.gz | tar xz
+curl -fsSL https://github.com/hoveychen/remote-computer-adapter/releases/latest/download/rca_linux_amd64.tar.gz | tar xz
 # Linux (arm64)
-curl -fsSL https://github.com/hoveychen/remote-adapter/releases/latest/download/rca_linux_arm64.tar.gz | tar xz
+curl -fsSL https://github.com/hoveychen/remote-computer-adapter/releases/latest/download/rca_linux_arm64.tar.gz | tar xz
 
 sudo install -m 755 rca /usr/local/bin/rca
 rca version

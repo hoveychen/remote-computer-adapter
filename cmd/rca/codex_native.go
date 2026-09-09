@@ -6,7 +6,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/hoveychen/remote-adapter/internal/codexnative"
+	"github.com/hoveychen/remote-computer-adapter/internal/codexnative"
 )
 
 func cmdCodexNative(args []string) int {
