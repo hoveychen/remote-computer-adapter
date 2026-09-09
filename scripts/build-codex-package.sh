@@ -100,7 +100,10 @@ cat > "$PKG/rca-codex-manifest.json" <<EOF
 EOF
 
 TARBALL="$OUT/codex-native_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz"
-tar -C "$OUT" -czf "$TARBALL" codex-native
+# COPYFILE_DISABLE keeps macOS tar from emitting an AppleDouble "._name"
+# sidecar beside every entry; they are noise in a package meant to be
+# extracted anywhere.
+COPYFILE_DISABLE=1 tar -C "$OUT" -czf "$TARBALL" codex-native
 ( cd "$OUT" && { shasum -a 256 "$(basename "$TARBALL")" 2>/dev/null || sha256sum "$(basename "$TARBALL")"; } > "$(basename "$TARBALL").sha256" )
 
 echo

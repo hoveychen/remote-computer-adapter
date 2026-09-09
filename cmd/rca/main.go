@@ -41,6 +41,8 @@ func dispatch(args []string) int {
 		return cmdDeploy(args[1:])
 	case "self-update":
 		return cmdSelfUpdate(args[1:])
+	case "codex-install":
+		return cmdCodexInstall(args[1:])
 	case "_state-mcp":
 		return cmdStateMCP(args[1:])
 	case "help", "-h", "--help":
@@ -77,6 +79,10 @@ Usage:
                           the published checksum, and proves the installed
                           binary answers. --verify-root <dir> also runs the
                           executor handshake and reports the resolved root
+  rca codex-install       install or update the patched Codex build codex-native
+                          needs. --from <dir|tarball> installs a local build
+                          from scripts/build-codex-package.sh; otherwise the
+                          release build for this platform is downloaded
   rca self-update         replace this binary with the current release build,
                           verified against the published checksum and by
                           running it before it takes over
