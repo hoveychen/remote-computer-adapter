@@ -37,6 +37,12 @@ func dispatch(args []string) int {
 		return cmdNativeTransport(args[1:])
 	case "serve":
 		return cmdServe(args[1:])
+	case "deploy":
+		return cmdDeploy(args[1:])
+	case "self-update":
+		return cmdSelfUpdate(args[1:])
+	case "codex-install":
+		return cmdCodexInstall(args[1:])
 	case "_state-mcp":
 		return cmdStateMCP(args[1:])
 	case "help", "-h", "--help":
@@ -68,6 +74,18 @@ Usage:
                           executor protocol on stdio and confined to <dir>.
                           Run it through a transport, e.g.
                           ssh sandbox-host rca serve --root /work/project
+  rca deploy <ssh-target> install or upgrade rca on the remote executor host:
+                          detects its platform, verifies the download against
+                          the published checksum, and proves the installed
+                          binary answers. --verify-root <dir> also runs the
+                          executor handshake and reports the resolved root
+  rca codex-install       install or update the patched Codex build codex-native
+                          needs. --from <dir|tarball> installs a local build
+                          from scripts/build-codex-package.sh; otherwise the
+                          release build for this platform is downloaded
+  rca self-update         replace this binary with the current release build,
+                          verified against the published checksum and by
+                          running it before it takes over
   rca version             print version
 
 The config file is JSON with absolute paths:

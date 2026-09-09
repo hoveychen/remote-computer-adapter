@@ -1,0 +1,70 @@
+name: Release patched Codex
+
+# Building Codex compiles a large Rust workspace, so this is not part of the
+# ordinary tag release: it runs when someone asks for it, after the patches
+# have been rebased onto a new upstream baseline.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the packages to (must already exist)
+        required: true
+      codex_repo:
+        description: Repository holding the patched Codex
+        required: true
+        default: hoveychen/codex
+      codex_ref:
+        description: Ref in that repository to build
+        required: true
+        default: main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: rca
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.codex_repo }}
+          ref: ${{ inputs.codex_ref }}
+          path: codex
+          # The build derives the patch list from history, so a shallow clone
+          # would make it unable to describe what it built.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: extractions/setup-just@v3
+      - name: Build the package
+        run: rca/scripts/build-codex-package.sh --codex "$GITHUB_WORKSPACE/codex" --out "$GITHUB_WORKSPACE/dist"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: codex-native-${{ matrix.runner }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  publish:
+    name: Attach to ${{ inputs.tag }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release upload "${{ inputs.tag }}" dist/* \
+            --repo "$GITHUB_REPOSITORY" --clobber

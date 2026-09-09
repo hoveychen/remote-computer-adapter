@@ -1,0 +1,8 @@
+# The upstream openai/codex commit the native-state patches sit on.
+#
+# scripts/build-codex-package.sh verifies the codex checkout actually contains
+# this commit and derives the patch list from it, so a package can never claim
+# a baseline it was not built from. Moving to a newer upstream means rebasing
+# the patches and editing this file — an explicit, reviewable act rather than
+# something a build script infers.
+5ecb3afd1b
