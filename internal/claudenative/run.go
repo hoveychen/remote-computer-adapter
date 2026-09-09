@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -48,6 +49,18 @@ func Run(c Config, args []string) error {
 		return err
 	}
 	defer lock.Close()
+
+	// Seed before anything else observable: if the subscription credential is
+	// unreachable the session cannot run at all, and failing here costs
+	// nothing, while failing after the executor is dialled leaves a process to
+	// reap and a store to close for no reason.
+	if !hasAPIKey() {
+		removeCredentials, err := seedCredentials(filepath.Join(c.RuntimeHome, "config"))
+		if err != nil {
+			return err
+		}
+		defer removeCredentials()
+	}
 
 	state, err := trustedstate.Open(c.StateRoot)
 	if err != nil {

@@ -83,6 +83,34 @@ func (c Config) validate() error {
 	if filepath.Clean(c.RuntimeHome) == filepath.Clean(c.StateRoot) {
 		return errors.New("runtime_home and state_root must differ")
 	}
+	return c.checkNotRealConfig()
+}
+
+// checkNotRealConfig refuses a runtime home that is, or contains, the
+// operator's own Claude configuration.
+//
+// Pointing a harness at that directory does not merely mix state: Claude Code
+// treats CLAUDE_CONFIG_DIR as the config root and looks for .claude.json
+// inside it, while the real one lives beside the directory at
+// ~/.claude.json. Finding none, it initialises a fresh config and replaces
+// the operator's — observed doing exactly that, backing up a 46 KB config and
+// leaving a 292-byte stub. The backup made recovery possible; the refusal
+// makes it unnecessary.
+func (c Config) checkNotRealConfig() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil // cannot tell; the runtime home checks still apply
+	}
+	runtime := filepath.Clean(c.RuntimeHome)
+	for _, real := range []string{
+		filepath.Join(home, ".claude"),
+		filepath.Join(home, ".claude.json"),
+	} {
+		if runtime == real || strings.HasPrefix(real, runtime+string(filepath.Separator)) {
+			return fmt.Errorf("runtime_home %q is or contains %q, the real Claude "+
+				"configuration; choose a directory rca can own outright", c.RuntimeHome, real)
+		}
+	}
 	return nil
 }
 

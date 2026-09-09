@@ -173,3 +173,30 @@ func TestMCPConfigCarriesTheBearerToken(t *testing.T) {
 		t.Errorf("authorization = %q", server.Headers["Authorization"])
 	}
 }
+
+// Pointing CLAUDE_CONFIG_DIR at the operator's own ~/.claude does not merely
+// mix state: Claude Code looks for .claude.json *inside* the config root,
+// while the real one sits beside the directory, so it initialises a fresh
+// config over the top. Observed replacing a 46 KB config with a 292-byte stub.
+func TestValidateRefusesTheRealClaudeConfig(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	for _, runtime := range []string{
+		filepath.Join(home, ".claude"),
+		home, // contains both ~/.claude and ~/.claude.json
+	} {
+		c := validConfig(t)
+		c.RuntimeHome = runtime
+		if err := c.validate(); err == nil {
+			t.Errorf("runtime_home %q was accepted", runtime)
+		}
+	}
+	// A sibling with a similar prefix is not the real config.
+	c := validConfig(t)
+	c.RuntimeHome = filepath.Join(home, ".claude-rca-runtime")
+	if err := c.validate(); err != nil {
+		t.Errorf("a distinct directory was rejected: %v", err)
+	}
+}
